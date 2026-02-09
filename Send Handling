@@ -186,30 +186,21 @@ function onEditInstallable(e) {
       
       if (amount && !invoiceCell.getValue()) {
         const publication = sheet.getRange(row, COL.PUBLICATION + 1).getValue();
-        const invoiceNum = generateInvoiceNumber(publication);
+        const invoiceNum = generateInvoiceNumber(publication, false); // Regular invoice
         invoiceCell.setValue(invoiceNum);
       }
     }
     
     // ═══════════════════════════════════════════════════════════
-    // 🔥 NEW QUEUEING LOGIC - Status change detection
+    // STATUS CHANGE LOGIC
     // ═══════════════════════════════════════════════════════════
     if (col === COL.STATUS + 1) {
       const newStatus = range.getValue();
-      const emailSent = sheet.getRange(row, COL.EMAIL_SENT + 1).getValue();
       
-      // If changing to Paid, cancel any pending reminder first
-      if (newStatus === 'Paid') {
-        cancelPendingReminder(sheet, row);
-      }
-      
-      // Determine what type of email we need to send
-      const needsReminder = newStatus === 'Reminder' && !emailSent.toString().includes('✅ Reminder Sent');
-      const needsConfirmation = newStatus === 'Paid' && !emailSent.toString().includes('✅ Confirmation Sent');
-      
-      // Only queue if this specific email hasn't been sent
-      if (needsReminder || needsConfirmation) {
-        queueEmailForRow(sheet, row, newStatus);
+      if (newStatus === 'Reminder') {
+        handleReminderStatus(sheet, row);
+      } else if (newStatus === 'Paid') {
+        handlePaidStatus(sheet, row);
       }
     }
     
@@ -217,6 +208,136 @@ function onEditInstallable(e) {
     console.error('onEditInstallable error:', error);
     logError('onEditInstallable', error);
   }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    SMART STATUS HANDLERS                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Handle Reminder status - Always generates invoice with -AD suffix
+ */
+function handleReminderStatus(sheet, row) {
+  const emailSent = sheet.getRange(row, COL.EMAIL_SENT + 1).getValue();
+  
+  // Don't send if already sent
+  if (emailSent && emailSent.toString().includes('Reminder Sent')) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'Reminder already sent for this row',
+      'ℹ️ Already Sent',
+      5
+    );
+    return;
+  }
+  
+  // Generate or update invoice with AD suffix
+  const publication = sheet.getRange(row, COL.PUBLICATION + 1).getValue();
+  const existingInvoice = sheet.getRange(row, COL.INVOICE_NUM + 1).getValue();
+  
+  let invoiceNum;
+  if (existingInvoice && existingInvoice.toString().includes('-AD')) {
+    // Already has AD invoice, keep it
+    invoiceNum = existingInvoice;
+  } else if (existingInvoice && !existingInvoice.toString().includes('-AD')) {
+    // Has regular invoice, add -AD to it
+    invoiceNum = existingInvoice + '-AD';
+    sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(invoiceNum);
+    sheet.getRange(row, COL.INVOICE_NUM + 1).setNote(
+      'Converted to reminder invoice on: ' + new Date().toLocaleString()
+    );
+  } else {
+    // No invoice exists, generate new with AD
+    invoiceNum = generateInvoiceNumber(publication, true); // true = Amount Due
+    sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(invoiceNum);
+  }
+  
+  // Queue reminder email
+  queueEmailForRow(sheet, row, 'Reminder');
+}
+
+/**
+ * Handle Paid status - OPTION 5: Reuse same invoice number, remove -AD
+ */
+function handlePaidStatus(sheet, row) {
+  const emailSent = sheet.getRange(row, COL.EMAIL_SENT + 1).getValue();
+  const existingInvoice = sheet.getRange(row, COL.INVOICE_NUM + 1).getValue();
+  const dateOfPayment = sheet.getRange(row, COL.DATE_OF_PAYMENT + 1).getValue();
+  const paymentType = sheet.getRange(row, COL.PAYMENT_TYPE + 1).getValue();
+  
+  // ═══ VALIDATION: Payment details required ═══
+  if (!dateOfPayment || !paymentType) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      '⚠️ Fill "Date of Payment" and "Payment Type" before marking as Paid.',
+      '❌ Missing Payment Details',
+      8
+    );
+    sheet.getRange(row, COL.STATUS + 1).setValue('Not paid');
+    return;
+  }
+  
+  // Don't send if already sent confirmation
+  if (emailSent && emailSent.toString().includes('Confirmation Sent')) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'Confirmation already sent for this row',
+      'ℹ️ Already Sent',
+      5
+    );
+    return;
+  }
+  
+  // ═══ DETERMINE SCENARIO ═══
+  const wasReminderSent = emailSent && emailSent.toString().includes('Reminder Sent');
+  const hasADInvoice = existingInvoice && existingInvoice.toString().includes('-AD');
+  
+  if (wasReminderSent || hasADInvoice) {
+    // ═══ SCENARIO B: Reminder → Paid (OPTION 5: REMOVE -AD, KEEP SAME NUMBER) ═══
+    Logger.log('Scenario B: Reminder → Paid (removing -AD from invoice)');
+    
+    if (hasADInvoice) {
+      // Remove -AD suffix to get the paid version (SAME NUMBER)
+      const paidInvoiceNum = existingInvoice.toString().replace('-AD', '');
+      
+      // Update invoice number in sheet
+      sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(paidInvoiceNum);
+      
+      // Add note showing the update
+      sheet.getRange(row, COL.INVOICE_NUM + 1).setNote(
+        'Original (Reminder): ' + existingInvoice + '\n' +
+        'Updated (Paid): ' + paidInvoiceNum + '\n' +
+        'Payment confirmed on: ' + new Date().toLocaleString()
+      );
+      
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        'Invoice updated: ' + paidInvoiceNum + ' (removed -AD)',
+        '📄 Same Invoice Number',
+        5
+      );
+      
+      Logger.log('Invoice converted from ' + existingInvoice + ' to ' + paidInvoiceNum);
+      
+    } else {
+      // Edge case: reminder was sent but invoice doesn't have -AD
+      // Generate regular invoice
+      const publication = sheet.getRange(row, COL.PUBLICATION + 1).getValue();
+      const invoiceNum = generateInvoiceNumber(publication, false);
+      sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(invoiceNum);
+    }
+    
+  } else {
+    // ═══ SCENARIO A: Direct Paid (never sent reminder) ═══
+    Logger.log('Scenario A: Direct Paid (generating regular invoice)');
+    
+    if (!existingInvoice) {
+      // No invoice exists, generate regular one
+      const publication = sheet.getRange(row, COL.PUBLICATION + 1).getValue();
+      const invoiceNum = generateInvoiceNumber(publication, false);
+      sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(invoiceNum);
+    }
+    // If invoice already exists (without -AD), keep it as is
+  }
+  
+  // Queue confirmation email
+  queueEmailForRow(sheet, row, 'Paid');
 }
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -233,6 +354,20 @@ function queueEmailForRow(sheet, row, status) {
     lock.waitLock(QUEUE_CONFIG.LOCK_TIMEOUT);
     
     const rowData = getRowData(row);
+
+    // ═══ DUPLICATE CHECK ═══
+    const currentEmailStatus = rowData.emailSent || '';
+    
+    // Don't queue if already sent this type
+    if (status === 'Reminder' && currentEmailStatus.includes('Reminder Sent')) {
+      Logger.log('Skipping - Reminder already sent for row ' + row);
+      return;
+    }
+    
+    if (status === 'Paid' && currentEmailStatus.includes('Confirmation Sent')) {
+      Logger.log('Skipping - Confirmation already sent for row ' + row);
+      return;
+    }
     
     // ═══ VALIDATION ═══
     if (status === 'Paid') {
@@ -383,6 +518,146 @@ function processEmailQueueWrapper(e) {
   }
 }
 
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    INVOICE CONSOLIDATION HELPER                            ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Ensure all articles in a consolidated group share the SAME invoice number
+ * This runs BEFORE sending the email
+ */
+function consolidateInvoiceNumbers(articles, status) {
+  if (!articles || articles.length === 0) return;
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+  const publication = articles[0].publication;
+  
+  Logger.log('Consolidating ' + articles.length + ' articles for ' + status);
+  
+  // ═══ COLLECT EXISTING INVOICES ═══
+  var existingInvoices = [];
+  articles.forEach(function(article) {
+    if (article.invoiceNum) {
+      existingInvoices.push({
+        invoice: article.invoiceNum,
+        rowIndex: article.rowIndex
+      });
+    }
+  });
+  
+  var consolidatedInvoice;
+  
+  if (status === 'Reminder') {
+    // ═══ REMINDER: Pick EARLIEST -AD invoice or generate new ═══
+    
+    // Filter only -AD invoices
+    var adInvoices = existingInvoices.filter(function(item) {
+      return item.invoice && item.invoice.toString().includes('-AD');
+    });
+    
+    if (adInvoices.length > 0) {
+      // Pick the one with LOWEST sequence number (earliest)
+      adInvoices.sort(function(a, b) {
+        var seqA = parseInt(a.invoice.match(/-(\d{4})-/)[1]);
+        var seqB = parseInt(b.invoice.match(/-(\d{4})-/)[1]);
+        return seqA - seqB;
+      });
+      
+      consolidatedInvoice = adInvoices[0].invoice;
+      Logger.log('Using earliest AD invoice: ' + consolidatedInvoice);
+      
+    } else {
+      // Check for regular invoices to convert
+      var regularInvoices = existingInvoices.filter(function(item) {
+        return item.invoice && !item.invoice.toString().includes('-AD');
+      });
+      
+      if (regularInvoices.length > 0) {
+        // Pick earliest and add -AD
+        regularInvoices.sort(function(a, b) {
+          var seqA = parseInt(a.invoice.match(/-(\d{4})-/)[1]);
+          var seqB = parseInt(b.invoice.match(/-(\d{4})-/)[1]);
+          return seqA - seqB;
+        });
+        
+        consolidatedInvoice = regularInvoices[0].invoice + '-AD';
+        Logger.log('Converting earliest regular to AD: ' + consolidatedInvoice);
+        
+      } else {
+        // No invoices exist, generate new
+        consolidatedInvoice = generateInvoiceNumber(publication, true);
+        Logger.log('Generated new AD invoice: ' + consolidatedInvoice);
+      }
+    }
+    
+  } else if (status === 'Paid') {
+    // ═══ PAID: Remove -AD from EARLIEST invoice ═══
+    
+    // Check for -AD invoices first
+    var adInvoices = existingInvoices.filter(function(item) {
+      return item.invoice && item.invoice.toString().includes('-AD');
+    });
+    
+    if (adInvoices.length > 0) {
+      // Pick earliest and remove -AD
+      adInvoices.sort(function(a, b) {
+        var seqA = parseInt(a.invoice.match(/-(\d{4})-/)[1]);
+        var seqB = parseInt(b.invoice.match(/-(\d{4})-/)[1]);
+        return seqA - seqB;
+      });
+      
+      consolidatedInvoice = adInvoices[0].invoice.replace('-AD', '');
+      Logger.log('Removed AD from earliest: ' + adInvoices[0].invoice + ' → ' + consolidatedInvoice);
+      
+    } else {
+      // No -AD invoices, pick earliest regular
+      var regularInvoices = existingInvoices.filter(function(item) {
+        return item.invoice && !item.invoice.toString().includes('-AD');
+      });
+      
+      if (regularInvoices.length > 0) {
+        regularInvoices.sort(function(a, b) {
+          var seqA = parseInt(a.invoice.match(/-(\d{4})-/)[1]);
+          var seqB = parseInt(b.invoice.match(/-(\d{4})-/)[1]);
+          return seqA - seqB;
+        });
+        
+        consolidatedInvoice = regularInvoices[0].invoice;
+        Logger.log('Using earliest regular invoice: ' + consolidatedInvoice);
+        
+      } else {
+        // No invoices at all, generate new
+        consolidatedInvoice = generateInvoiceNumber(publication, false);
+        Logger.log('Generated new regular invoice: ' + consolidatedInvoice);
+      }
+    }
+  }
+  
+  // ═══ APPLY CONSOLIDATED INVOICE TO ALL ROWS ═══
+  articles.forEach(function(article) {
+    var oldInvoice = article.invoiceNum;
+    
+    // Update in memory
+    article.invoiceNum = consolidatedInvoice;
+    
+    // Update in sheet
+    sheet.getRange(article.rowIndex, COL.INVOICE_NUM + 1).setValue(consolidatedInvoice);
+    
+    // Add note if changed
+    if (oldInvoice && oldInvoice !== consolidatedInvoice) {
+      sheet.getRange(article.rowIndex, COL.INVOICE_NUM + 1).setNote(
+        'Original: ' + oldInvoice + '\n' +
+        'Consolidated to: ' + consolidatedInvoice + '\n' +
+        'On: ' + new Date().toLocaleString()
+      );
+      Logger.log('Row ' + article.rowIndex + ': ' + oldInvoice + ' → ' + consolidatedInvoice);
+    }
+  });
+  
+  Logger.log('Final consolidated invoice: ' + consolidatedInvoice);
+  return consolidatedInvoice;
+}
+
 /**
  * Process a single queue entry
  */
@@ -413,6 +688,10 @@ function processQueueEntry(queueKey, entry, queue) {
       throw new Error('Email quota low: ' + remaining + ' emails remaining today');
     }
     
+    // ═══ 🔥 CONSOLIDATE INVOICE NUMBERS (NEW!) ═══
+    const consolidatedInvoice = consolidateInvoiceNumbers(articles, entry.status);
+    Logger.log('Consolidated invoice for queue: ' + consolidatedInvoice);
+    
     // ═══ SEND EMAIL ═══
     let result;
     if (entry.status === 'Reminder') {
@@ -431,9 +710,7 @@ function processQueueEntry(queueKey, entry, queue) {
     entry.rows.forEach(function(row) {
       sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('✅ ' + emailStatus);
       
-      if (result.invoiceNumber) {
-        sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(result.invoiceNumber);
-      }
+      // Invoice number already set by consolidateInvoiceNumbers
       
       if (result.invoiceUrl) {
         sheet.getRange(row, COL.INVOICE_LINK + 1).setValue(result.invoiceUrl);
@@ -451,11 +728,11 @@ function processQueueEntry(queueKey, entry, queue) {
       queueKey: queueKey,
       status: entry.status,
       rowCount: entry.rows.length,
-      invoiceNumber: result.invoiceNumber
+      invoiceNumber: consolidatedInvoice
     });
     
     console.log('✅ Sent ' + entry.status + ' email for ' + entry.clientEmail + 
-                ' (' + entry.rows.length + ' articles)');
+                ' (' + entry.rows.length + ' articles) - Invoice: ' + consolidatedInvoice);
     
   } catch (error) {
     console.error('Failed to process queue entry ' + queueKey + ':', error);
@@ -465,29 +742,24 @@ function processQueueEntry(queueKey, entry, queue) {
     entry.lastError = error.message;
     
     if (entry.retryCount < QUEUE_CONFIG.MAX_RETRIES) {
-      // Schedule retry
       entry.scheduledTime = new Date().getTime() + 
                            (QUEUE_CONFIG.RETRY_DELAY_MINUTES * 60 * 1000);
       
-      // Delete old trigger
       if (entry.triggerId) {
         deleteTriggerById(entry.triggerId);
       }
       
-      // Create new trigger
       const newTriggerId = createDelayedTrigger(entry.queueId, QUEUE_CONFIG.RETRY_DELAY_MINUTES);
       entry.triggerId = newTriggerId;
       
       console.log('Retry scheduled (' + entry.retryCount + '/' + QUEUE_CONFIG.MAX_RETRIES + ')');
       
-      // Update sheet
       entry.rows.forEach(function(row) {
         sheet.getRange(row, COL.EMAIL_SENT + 1)
           .setValue('🔄 Retry ' + entry.retryCount + '/' + QUEUE_CONFIG.MAX_RETRIES);
       });
       
     } else {
-      // Max retries exceeded
       entry.rows.forEach(function(row) {
         const errorMsg = error.message.substring(0, 30);
         sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('❌ Failed: ' + errorMsg);
@@ -1036,7 +1308,7 @@ function logError(context, error) {
 // ║                    INVOICE NUMBER GENERATOR                                ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
-function generateInvoiceNumber(publication) {
+function generateInvoiceNumber(publication, isAmountDue) {
   const lock = LockService.getScriptLock();
   
   try {
@@ -1048,9 +1320,11 @@ function generateInvoiceNumber(publication) {
     let maxNum = 0;
     const prefix = CONFIG.INVOICE_PREFIX;
     
+    // Find highest sequence number (check both regular and -AD invoices)
     for (let i = 1; i < data.length; i++) {
       const invoiceNum = data[i][COL.INVOICE_NUM];
       if (invoiceNum && invoiceNum.toString().startsWith(prefix)) {
+        // Extract the 4-digit sequence number
         const match = invoiceNum.toString().match(/-(\d{4})-/);
         if (match) {
           const num = parseInt(match[1]);
@@ -1065,95 +1339,25 @@ function generateInvoiceNumber(publication) {
     const day = String(date.getDate()).padStart(2, '0');
     const sequence = String(maxNum + 1).padStart(4, '0');
     
-    const cleanPublication = publication ? 
-      publication.toString().replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '') : 
-      'General';
+    // ✅ FIX: Use cleanPublicationName FIRST, then remove special chars
+    let cleanedPub = cleanPublicationName(publication); // Removes .com, .org, etc.
+    cleanedPub = cleanedPub ? cleanedPub.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '') : 'General';
     
-    return prefix + year + month + day + '-' + sequence + '-' + cleanPublication;
+    // Add -AD suffix ONLY if this is for a reminder/amount due invoice
+    const suffix = isAmountDue ? '-AD' : '';
+    
+    const finalInvoiceNumber = prefix + year + month + day + '-' + sequence + '-' + cleanedPub + suffix;
+    
+    Logger.log('Generated invoice: ' + finalInvoiceNumber + ' (isAmountDue: ' + isAmountDue + ')');
+    
+    return finalInvoiceNumber;
     
   } finally {
     lock.releaseLock();
   }
 }
 
-// ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║                    NAME & PUBLICATION HELPERS                              ║
-// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-function parseClientName(fullName) {
-  if (!fullName) {
-    return { salutation: '', firstName: '', lastName: '', fullName: '', formalName: '' };
-  }
-  
-  const salutations = ['Mr.', 'Ms.', 'Mrs.', 'Dr.', 'Prof.', 'Mr', 'Ms', 'Mrs', 'Dr', 'Prof'];
-  
-  let salutation = '';
-  let firstName = '';
-  let lastName = '';
-  
-  const parts = fullName.toString().trim().split(/\s+/);
-  
-  if (parts.length > 0) {
-    const firstPart = parts[0];
-    const normalizedFirst = firstPart.replace('.', '');
-    
-    const matchedSalutation = salutations.find(function(s) {
-      return s.replace('.', '').toLowerCase() === normalizedFirst.toLowerCase();
-    });
-    
-    if (matchedSalutation) {
-      salutation = firstPart.endsWith('.') ? firstPart : firstPart + '.';
-      parts.shift();
-    }
-  }
-  
-  if (parts.length >= 1) {
-    firstName = parts[0];
-  }
-  
-  if (parts.length >= 2) {
-    lastName = parts.slice(1).join(' ');
-  }
-  
-  let formalName = '';
-  if (salutation) {
-    formalName = salutation + ' ' + firstName + (lastName ? ' ' + lastName : '');
-  } else {
-    formalName = firstName + (lastName ? ' ' + lastName : '');
-  }
-  
-  return {
-    salutation: salutation,
-    firstName: firstName,
-    lastName: lastName,
-    fullName: fullName.toString().trim(),
-    formalName: formalName.trim()
-  };
-}
-
-function cleanPublicationName(publication) {
-  if (!publication) return '';
-  
-  let cleaned = publication.toString().trim();
-  
-  const extensions = [
-    '.com', '.org', '.net', '.io', '.co', '.in', '.uk', '.us', 
-    '.edu', '.gov', '.info', '.biz', '.co.uk', '.co.in', '.com.au',
-    '.media', '.news', '.blog', '.online', '.site', '.tech'
-  ];
-  
-  extensions.sort(function(a, b) { return b.length - a.length; });
-  
-  for (var i = 0; i < extensions.length; i++) {
-    var ext = extensions[i];
-    if (cleaned.toLowerCase().endsWith(ext)) {
-      cleaned = cleaned.substring(0, cleaned.length - ext.length);
-      break;
-    }
-  }
-  
-  return cleaned;
-}
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║                       DATE FORMATTING                                      ║
@@ -2212,7 +2416,7 @@ function generateInvoiceForSelectedRow() {
   }
   
   if (!data.invoiceNum) {
-    data.invoiceNum = generateInvoiceNumber(data.publication);
+    data.invoiceNum = generateInvoiceNumber(data.publication, false);
     sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(data.invoiceNum);
   }
   
@@ -2247,7 +2451,7 @@ function generateDueInvoiceForSelectedRow() {
   }
   
   if (!data.invoiceNum) {
-    data.invoiceNum = generateInvoiceNumber(data.publication);
+    data.invoiceNum = generateInvoiceNumber(data.publication, true);
     sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(data.invoiceNum);
   }
   
