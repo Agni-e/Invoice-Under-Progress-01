@@ -1,0 +1,3238 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * QUILL AND QUERY - FREELANCE INVOICING SYSTEM v2.0
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 
+ * Features:
+ * ✓ Auto-invoice generation with Publication name
+ * ✓ Payment validation (Date + Type required before sending)
+ * ✓ Consolidated invoices for same client + same date
+ * ✓ One-page compact invoice design
+ * ✓ Document links in PDF (clickable)
+ * ✓ Invoice Link column in sheet for easy access
+ * ✓ Email queuing with 2-minute delay & debouncing
+ * ✓ Automatic retry on failure (3 attempts)
+ * ✓ Dashboard with earnings tracking
+ * ✓ Salutation support (Mr./Ms./Dr./Prof.)
+ * ✓ Publication name cleaning (removes .com, .org, etc.)
+ * ✓ Recurring invoices (Weekly/Monthly/Quarterly/Yearly)
+ * ✓ Audit logging for all operations
+ * ✓ Zero duplicate emails
+ * 
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                           CONFIGURATION                                    ║
+// ║                    UPDATE THESE VALUES WITH YOUR INFO                      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+const CONFIG = {
+  // Your Details
+  YOUR_NAME: "hnx",
+  YOUR_EMAIL: "fcxbgcfx",
+  YOUR_ADDRESS: "vhbc ",
+  YOUR_PHONE: "452434",
+   
+  // Business Details
+  BUSINESS_NAME: "gfdxg",
+  
+  // Logo - Upload to Google Drive, right-click → Get link → Copy the file ID
+  // Example: https://drive.google.com/file/d/ABC123XYZ/view → ID is ABC123XYZ
+  LOGO_FILE_ID: "1nTCaQzX-MXlfVDWB8gzIfS9HQVXMZm20",
+  
+  // Payment/Bank Details
+  BANK_DETAILS: {
+    bankName: "zdfzs",
+    accountName: "cdcdssssf",
+    accountNumber: "354242",
+    ifscCode: "465vgch",
+    upiId: "fcgxc@dfgd"
+  },
+  
+  // Invoice Settings
+  INVOICE_PREFIX: "QQ-",
+  INVOICE_FOLDER_NAME: "Quill and Query Invoices",
+  PARENT_FOLDER_NAME: "000_Projects 101",
+  
+  // Sheet name
+  SHEET_NAME: "Work Log"
+};
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         QUEUE CONFIGURATION                                ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+const QUEUE_CONFIG = {
+  DELAY_MINUTES: 2,              // Delay before sending emails
+  MAX_RETRIES: 3,                // Retry attempts for failed emails
+  RETRY_DELAY_MINUTES: 5,        // Delay between retries
+  LOCK_TIMEOUT: 30000            // 30 seconds lock timeout
+};
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                      RECURRING INVOICE CONFIG                              ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+const RECURRING_CONFIG = {
+  SHEET_NAME: 'Recurring Invoices',
+  CHECK_INTERVAL_HOURS: 6        // Check every 6 hours
+};
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         COLUMN INDICES                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+const COL = {
+  SUBMITTED_DATE: 0,
+  CLIENT: 1,
+  CLIENT_EMAIL: 2,
+  PUBLICATION: 3,
+  BUSINESS_TYPE: 4,
+  RATE_TYPE: 5,
+  TITLE: 6,
+  DOCLINK: 7,
+  WORD_COUNT: 8,
+  RATE: 9,
+  AMOUNT: 10,
+  STATUS: 11,
+  DATE_OF_PAYMENT: 12,
+  PAYMENT_TYPE: 13,
+  INVOICE_NUM: 14,
+  EMAIL_SENT: 15,
+  INVOICE_LINK: 16
+};
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                            MENU SETUP                                      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('📧 Quill & Query')
+    .addItem('🔧 Initial Setup (Run Once)', 'initialSetup')
+    .addItem('➕ Add Invoice Link Column (If Missing)', 'addInvoiceLinkColumn')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('📧 Email Actions')
+      .addItem('Send Reminder (Selected Row)', 'sendReminderForSelectedRow')
+      .addItem('Send Confirmation (Selected Row)', 'sendConfirmationForSelectedRow')
+      .addItem('Process All Pending Emails', 'processAllPendingEmails')
+      .addSeparator()
+      .addItem('🔍 View Email Queue', 'viewEmailQueue')
+      .addItem('🗑️ Clear Email Queue', 'clearEmailQueue'))
+    .addSubMenu(ui.createMenu('📄 Invoice Actions')
+      .addItem('Generate Invoice (Selected Row)', 'generateInvoiceForSelectedRow')
+      .addItem('Generate Due Invoice (Selected Row)', 'generateDueInvoiceForSelectedRow')
+      .addItem('Preview Invoice (Selected Row)', 'previewInvoice')
+      .addItem('Open Invoice Folder', 'openInvoiceFolder'))
+    .addSubMenu(ui.createMenu('🔁 Recurring Invoices')
+      .addItem('📋 Setup Recurring Invoices', 'setupRecurringInvoices')
+      .addItem('▶️ Process Now (Test)', 'testRecurringInvoices')
+      .addItem('📊 View Recurring Status', 'viewRecurringStatus'))
+    .addSeparator()
+    .addItem('📊 View Dashboard', 'showDashboard')
+    .addItem('📝 View Audit Log', 'showAuditLog')
+    .addItem('🔄 Reset Email Status (Selected Row)', 'resetEmailStatus')
+    .addToUi();
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         TRIGGER FUNCTIONS                                  ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Simple onEdit - For calculations only (cannot send emails)
+ */
+function onEdit(e) {
+  try {
+    const sheet = e.source.getActiveSheet();
+    const range = e.range;
+    const row = range.getRow();
+    const col = range.getColumn();
+    
+    if (row === 1 || sheet.getName() !== CONFIG.SHEET_NAME) return;
+    
+    // Auto-calculate amount based on rate type
+    if (col === COL.RATE_TYPE + 1 || col === COL.WORD_COUNT + 1 || col === COL.RATE + 1) {
+      autoCalculateAmount(sheet, row);
+    }
+  } catch (error) {
+    console.error('onEdit error:', error);
+  }
+}
+
+/**
+ * Installable onEdit - For emails and Drive access
+ * NEW VERSION WITH QUEUEING SYSTEM
+ */
+function onEditInstallable(e) {
+  try {
+    const sheet = e.source.getActiveSheet();
+    const range = e.range;
+    const row = range.getRow();
+    const col = range.getColumn();
+    
+    if (row === 1 || sheet.getName() !== CONFIG.SHEET_NAME) return;
+    
+    // Auto-calculate amount
+    if (col === COL.RATE_TYPE + 1 || col === COL.WORD_COUNT + 1 || col === COL.RATE + 1) {
+      autoCalculateAmount(sheet, row);
+    }
+    
+    // Generate invoice number when amount is entered
+    if (col === COL.AMOUNT + 1) {
+      const amount = range.getValue();
+      const invoiceCell = sheet.getRange(row, COL.INVOICE_NUM + 1);
+      
+      if (amount && !invoiceCell.getValue()) {
+        const publication = sheet.getRange(row, COL.PUBLICATION + 1).getValue();
+        const invoiceNum = generateInvoiceNumber(publication);
+        invoiceCell.setValue(invoiceNum);
+      }
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // 🔥 NEW QUEUEING LOGIC - Status change detection
+    // ═══════════════════════════════════════════════════════════
+    if (col === COL.STATUS + 1) {
+      const newStatus = range.getValue();
+      const emailSent = sheet.getRange(row, COL.EMAIL_SENT + 1).getValue();
+      
+      // If changing to Paid, cancel any pending reminder first
+      if (newStatus === 'Paid') {
+        cancelPendingReminder(sheet, row);
+      }
+      
+      // Determine what type of email we need to send
+      const needsReminder = newStatus === 'Reminder' && !emailSent.toString().includes('✅ Reminder Sent');
+      const needsConfirmation = newStatus === 'Paid' && !emailSent.toString().includes('✅ Confirmation Sent');
+      
+      // Only queue if this specific email hasn't been sent
+      if (needsReminder || needsConfirmation) {
+        queueEmailForRow(sheet, row, newStatus);
+      }
+    }
+    
+  } catch (error) {
+    console.error('onEditInstallable error:', error);
+    logError('onEditInstallable', error);
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         QUEUE MANAGEMENT                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Queue an email job with debouncing
+ */
+function queueEmailForRow(sheet, row, status) {
+  const lock = LockService.getScriptLock();
+  
+  try {
+    lock.waitLock(QUEUE_CONFIG.LOCK_TIMEOUT);
+    
+    const rowData = getRowData(row);
+    
+    // ═══ VALIDATION ═══
+    if (status === 'Paid') {
+      if (!rowData.dateOfPayment || !rowData.paymentType) {
+        SpreadsheetApp.getActiveSpreadsheet().toast(
+          '⚠️ Fill "Date of Payment" and "Payment Type" before marking as Paid.',
+          '❌ Missing Payment Details',
+          8
+        );
+        sheet.getRange(row, COL.STATUS + 1).setValue('Not paid');
+        return;
+      }
+    }
+    
+    // ═══ CREATE QUEUE KEY ═══
+    const clientEmail = rowData.clientEmail;
+    const submittedDate = formatDateForCompare(rowData.submittedDate);
+    const queueKey = clientEmail + '|' + submittedDate + '|' + status;
+    
+    // ═══ GET OR CREATE QUEUE ENTRY ═══
+    const queue = getEmailQueue();
+    let queueEntry = queue[queueKey];
+    
+    const now = new Date().getTime();
+    const scheduledTime = now + (QUEUE_CONFIG.DELAY_MINUTES * 60 * 1000);
+    
+    if (queueEntry) {
+      // ═══ DEBOUNCING: Entry exists, reset timer ═══
+      console.log('Debouncing: Resetting timer for ' + queueKey);
+      
+      // Add this row if not already included
+      if (queueEntry.rows.indexOf(row) === -1) {
+        queueEntry.rows.push(row);
+      }
+      
+      // Reset scheduled time
+      queueEntry.scheduledTime = scheduledTime;
+      
+      // Delete old trigger and create new one
+      if (queueEntry.triggerId) {
+        deleteTriggerById(queueEntry.triggerId);
+      }
+      
+    } else {
+      // ═══ NEW ENTRY ═══
+      queueEntry = {
+        queueId: Utilities.getUuid(),
+        clientEmail: clientEmail,
+        submittedDate: submittedDate,
+        status: status,
+        rows: [row],
+        scheduledTime: scheduledTime,
+        triggerId: null,
+        sent: false,
+        retryCount: 0,
+        lastError: null,
+        createdAt: now
+      };
+    }
+    
+    // ═══ CREATE TIME-BASED TRIGGER ═══
+    const triggerId = createDelayedTrigger(queueEntry.queueId, QUEUE_CONFIG.DELAY_MINUTES);
+    queueEntry.triggerId = triggerId;
+    
+    // ═══ SAVE QUEUE ═══
+    queue[queueKey] = queueEntry;
+    saveEmailQueue(queue);
+    
+    // ═══ USER NOTIFICATION ═══
+    const rowCount = queueEntry.rows.length;
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'Email will be sent in ' + QUEUE_CONFIG.DELAY_MINUTES + ' minute' + 
+      (QUEUE_CONFIG.DELAY_MINUTES > 1 ? 's' : '') + ' (' + rowCount + 
+      ' article' + (rowCount > 1 ? 's' : '') + ' queued)',
+      '⏱️ Email Queued',
+      5
+    );
+    
+    // ═══ MARK AS QUEUED ═══
+    sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('📬 Queued');
+    
+  } catch (error) {
+    console.error('Queue error:', error);
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'Failed to queue email: ' + error.message,
+      '❌ Error',
+      8
+    );
+    logError('queueEmailForRow', error);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Process queue - Called by time-based trigger
+ */
+function processEmailQueueWrapper(e) {
+  console.log("=== TRIGGER FIRED ===");
+  console.log("Event object:", JSON.stringify(e));
+  console.log("Trigger UID:", e && e.triggerUid ? e.triggerUid : 'NO UID');
+  
+  const lock = LockService.getScriptLock();
+  
+  try {
+    lock.waitLock(QUEUE_CONFIG.LOCK_TIMEOUT);
+    
+    const triggerId = e && e.triggerUid ? e.triggerUid.toString() : null;
+    console.log("Looking for triggerId:", triggerId);
+    
+    const queue = getEmailQueue();
+    console.log("Queue keys:", Object.keys(queue));
+    console.log("Queue contents:", JSON.stringify(queue));
+    
+    // Find the queue entry for this trigger
+    let queueKeyToProcess = null;
+    let entryToProcess = null;
+    
+    for (const key in queue) {
+      console.log("Checking key:", key, "| Stored triggerId:", queue[key].triggerId, "| Match:", queue[key].triggerId === triggerId);
+      if (queue[key].triggerId === triggerId && !queue[key].sent) {
+        queueKeyToProcess = key;
+        entryToProcess = queue[key];
+        console.log("MATCH FOUND for key:", key);
+        break;
+      }
+    }
+    
+    if (!entryToProcess) {
+      console.log('ERROR: No queue entry found for trigger ' + triggerId);
+      // Try to find by partial match
+      for (const key in queue) {
+        if (!queue[key].sent) {
+          console.log("Available unsent entry:", key, "with triggerId:", queue[key].triggerId);
+        }
+      }
+      return;
+    }
+    
+    console.log('Processing queue entry:', queueKeyToProcess);
+    processQueueEntry(queueKeyToProcess, entryToProcess, queue);
+    
+  } catch (error) {
+    console.error('processEmailQueueWrapper error:', error);
+    logError('processEmailQueueWrapper', error);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Process a single queue entry
+ */
+function processQueueEntry(queueKey, entry, queue) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+  
+  try {
+    // ═══ GATHER ARTICLE DATA ═══
+    const articles = entry.rows.map(function(row) {
+      return getRowData(row);
+    });
+    
+    // ═══ FINAL VALIDATION ═══
+    const allValid = articles.every(function(article) {
+      if (entry.status === 'Paid') {
+        return article.dateOfPayment && article.paymentType;
+      }
+      return true;
+    });
+    
+    if (!allValid) {
+      throw new Error('Missing payment details in one or more rows');
+    }
+    
+    // ═══ CHECK EMAIL QUOTA ═══
+    const remaining = MailApp.getRemainingDailyQuota();
+    if (remaining < 5) {
+      throw new Error('Email quota low: ' + remaining + ' emails remaining today');
+    }
+    
+    // ═══ SEND EMAIL ═══
+    let result;
+    if (entry.status === 'Reminder') {
+      result = sendConsolidatedReminder(articles);
+    } else if (entry.status === 'Paid') {
+      result = sendConsolidatedConfirmation(articles);
+    }
+    
+    if (!result || !result.success) {
+      throw new Error(result && result.error ? result.error : 'Email sending failed');
+    }
+    
+    // ═══ UPDATE SHEET ═══
+    const emailStatus = entry.status === 'Paid' ? 'Confirmation Sent' : 'Reminder Sent';
+    
+    entry.rows.forEach(function(row) {
+      sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('✅ ' + emailStatus);
+      
+      if (result.invoiceNumber) {
+        sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(result.invoiceNumber);
+      }
+      
+      if (result.invoiceUrl) {
+        sheet.getRange(row, COL.INVOICE_LINK + 1).setValue(result.invoiceUrl);
+      }
+    });
+    
+    // ═══ MARK AS SENT ═══
+    entry.sent = true;
+    entry.sentAt = new Date().getTime();
+    queue[queueKey] = entry;
+    saveEmailQueue(queue);
+    
+    // ═══ LOG SUCCESS ═══
+    logAuditEvent('email_sent', {
+      queueKey: queueKey,
+      status: entry.status,
+      rowCount: entry.rows.length,
+      invoiceNumber: result.invoiceNumber
+    });
+    
+    console.log('✅ Sent ' + entry.status + ' email for ' + entry.clientEmail + 
+                ' (' + entry.rows.length + ' articles)');
+    
+  } catch (error) {
+    console.error('Failed to process queue entry ' + queueKey + ':', error);
+    
+    // ═══ RETRY LOGIC ═══
+    entry.retryCount = (entry.retryCount || 0) + 1;
+    entry.lastError = error.message;
+    
+    if (entry.retryCount < QUEUE_CONFIG.MAX_RETRIES) {
+      // Schedule retry
+      entry.scheduledTime = new Date().getTime() + 
+                           (QUEUE_CONFIG.RETRY_DELAY_MINUTES * 60 * 1000);
+      
+      // Delete old trigger
+      if (entry.triggerId) {
+        deleteTriggerById(entry.triggerId);
+      }
+      
+      // Create new trigger
+      const newTriggerId = createDelayedTrigger(entry.queueId, QUEUE_CONFIG.RETRY_DELAY_MINUTES);
+      entry.triggerId = newTriggerId;
+      
+      console.log('Retry scheduled (' + entry.retryCount + '/' + QUEUE_CONFIG.MAX_RETRIES + ')');
+      
+      // Update sheet
+      entry.rows.forEach(function(row) {
+        sheet.getRange(row, COL.EMAIL_SENT + 1)
+          .setValue('🔄 Retry ' + entry.retryCount + '/' + QUEUE_CONFIG.MAX_RETRIES);
+      });
+      
+    } else {
+      // Max retries exceeded
+      entry.rows.forEach(function(row) {
+        const errorMsg = error.message.substring(0, 30);
+        sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('❌ Failed: ' + errorMsg);
+      });
+      
+      logError('email_send_failed', {
+        queueKey: queueKey,
+        error: error.message,
+        rows: entry.rows
+      });
+    }
+    
+    queue[queueKey] = entry;
+    saveEmailQueue(queue);
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                      QUEUE PERSISTENCE                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Get email queue from Properties Service
+ */
+function getEmailQueue() {
+  const props = PropertiesService.getScriptProperties();
+  const queueJson = props.getProperty('EMAIL_QUEUE');
+  
+  if (!queueJson) return {};
+  
+  try {
+    return JSON.parse(queueJson);
+  } catch (e) {
+    console.error('Failed to parse queue:', e);
+    return {};
+  }
+}
+
+/**
+ * Cancel pending reminder for a row when status changes to Paid
+ */
+function cancelPendingReminder(sheet, row) {
+  const queue = getEmailQueue();
+  const rowData = getRowData(row);
+  const clientEmail = rowData.clientEmail;
+  const submittedDate = formatDateForCompare(rowData.submittedDate);
+  const reminderKey = clientEmail + '|' + submittedDate + '|Reminder';
+  
+  if (queue[reminderKey] && !queue[reminderKey].sent) {
+    // Cancel the reminder
+    if (queue[reminderKey].triggerId) {
+      deleteTriggerById(queue[reminderKey].triggerId);
+    }
+    delete queue[reminderKey];
+    saveEmailQueue(queue);
+    
+    // Update sheet
+    sheet.getRange(row, COL.EMAIL_SENT + 1).setValue(''); // Clear queued status
+    console.log('Cancelled pending reminder for row ' + row);
+  }
+}
+
+/**
+ * Save email queue to Properties Service
+ */
+function saveEmailQueue(queue) {
+  const props = PropertiesService.getScriptProperties();
+  
+  // Clean up old sent entries (older than 24 hours)
+  const oneDayAgo = new Date().getTime() - (24 * 60 * 60 * 1000);
+  Object.keys(queue).forEach(function(key) {
+    if (queue[key].sent && queue[key].sentAt && queue[key].sentAt < oneDayAgo) {
+      delete queue[key];
+    }
+  });
+  
+  props.setProperty('EMAIL_QUEUE', JSON.stringify(queue));
+}
+
+/**
+ * Clear all queue entries (for maintenance)
+ */
+function clearEmailQueue() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Clear Email Queue?',
+    'This will delete all pending emails and triggers. Continue?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response !== ui.Button.YES) return;
+  
+  PropertiesService.getScriptProperties().deleteProperty('EMAIL_QUEUE');
+  
+  // Delete all pending triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'processEmailQueueWrapper') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  SpreadsheetApp.getUi().alert('✅ Email queue cleared and all pending triggers deleted.');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                       TRIGGER MANAGEMENT                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Create time-based trigger for delayed execution
+ */
+function createDelayedTrigger(queueId, delayMinutes) {
+  const triggerTime = new Date(new Date().getTime() + delayMinutes * 60 * 1000);
+  
+  const trigger = ScriptApp.newTrigger('processEmailQueueWrapper')
+    .timeBased()
+    .at(triggerTime)
+    .create();
+  
+  // FORCE STRING and log it
+  const triggerId = String(trigger.getUniqueId());
+  
+  console.log('Created trigger ID:', triggerId, 'Type:', typeof triggerId);
+  console.log('Scheduled for:', triggerTime);
+  
+  return triggerId;
+}
+
+/**
+ * Delete trigger by ID
+ */
+function deleteTriggerById(triggerId) {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getUniqueId() === triggerId) {
+      ScriptApp.deleteTrigger(trigger);
+      console.log('Deleted trigger ' + triggerId);
+    }
+  });
+}
+
+/**
+ * Setup installable edit trigger
+ */
+function setupEditTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'onEditInstallable') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  ScriptApp.newTrigger('onEditInstallable')
+    .forSpreadsheet(SpreadsheetApp.getActive())
+    .onEdit()
+    .create();
+    
+  console.log('Edit trigger created successfully');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    RECURRING INVOICES SYSTEM                               ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Setup recurring invoices sheet
+ */
+function setupRecurringInvoices() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(RECURRING_CONFIG.SHEET_NAME);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(RECURRING_CONFIG.SHEET_NAME);
+  } else {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.alert(
+      'Sheet exists',
+      'Recurring Invoices sheet exists. Reset it?',
+      ui.ButtonSet.YES_NO
+    );
+    if (response !== ui.Button.YES) return;
+    sheet.clear();
+  }
+  
+  // Headers
+  const headers = [
+    'Client Name',
+    'Client Email', 
+    'Publication',
+    'Title Template',
+    'Business Type',
+    'Rate Type',
+    'Amount',
+    'Frequency',
+    'Start Date',
+    'End Date',
+    'Last Generated',
+    'Next Due',
+    'Status',
+    'Auto-Send Reminder',
+    'Notes'
+  ];
+  
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  
+  // Formatting
+  const headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setFontWeight('bold');
+  headerRange.setBackground('#9b59b6');
+  headerRange.setFontColor('white');
+  headerRange.setHorizontalAlignment('center');
+  sheet.setFrozenRows(1);
+  
+  // Column widths
+  const widths = [150, 200, 150, 250, 130, 100, 100, 120, 120, 120, 120, 120, 100, 130, 200];
+  widths.forEach(function(w, i) { sheet.setColumnWidth(i + 1, w); });
+  
+  // Data validation
+  const numRows = 100;
+  
+  sheet.getRange(2, 8, numRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Weekly', 'Bi-weekly', 'Monthly', 'Quarterly', 'Yearly'], true)
+      .build()
+  );
+  
+  sheet.getRange(2, 13, numRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Active', 'Paused', 'Completed'], true)
+      .build()
+  );
+  
+  sheet.getRange(2, 14, numRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Yes', 'No'], true)
+      .build()
+  );
+  
+  // Date formats
+  sheet.getRange(2, 9, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(2, 10, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(2, 11, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(2, 12, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  
+  // Amount format
+  sheet.getRange(2, 7, numRows, 1).setNumberFormat('₹#,##0.00');
+  
+  // Add sample row
+  sheet.getRange(2, 1, 1, headers.length).setValues([[
+    'Mr. John Doe',
+    'john@example.com',
+    'TechBlog',
+    'Monthly Retainer - {month} {year}',
+    'Content Writing',
+    'Retainer',
+    25000,
+    'Monthly',
+    new Date(),
+    '',
+    '',
+    '',
+    'Paused',
+    'Yes',
+    'Example recurring invoice - Set status to Active to enable'
+  ]]);
+  
+  // Create trigger
+  createRecurringInvoiceTrigger();
+  
+  SpreadsheetApp.getUi().alert(
+    '✅ Recurring Invoices Setup Complete!',
+    'Sheet created with sample data.\n\n' +
+    '📅 System will check for due invoices every ' + RECURRING_CONFIG.CHECK_INTERVAL_HOURS + ' hours.\n\n' +
+    'Variables you can use in Title Template:\n' +
+    '  {month} - Current month name\n' +
+    '  {year} - Current year\n' +
+    '  {date} - Current date\n' +
+    '  {week} - Week number\n\n' +
+    'Set Status to "Active" to enable auto-generation.'
+  );
+}
+
+/**
+ * Create trigger to check recurring invoices
+ */
+function createRecurringInvoiceTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'processRecurringInvoices') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  ScriptApp.newTrigger('processRecurringInvoices')
+    .timeBased()
+    .everyHours(RECURRING_CONFIG.CHECK_INTERVAL_HOURS)
+    .create();
+  
+  console.log('Recurring invoice trigger created');
+}
+
+/**
+ * Process all recurring invoices (called by trigger)
+ */
+function processRecurringInvoices() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const recurringSheet = ss.getSheetByName(RECURRING_CONFIG.SHEET_NAME);
+  
+  if (!recurringSheet) {
+    console.log('Recurring invoices sheet not found');
+    return;
+  }
+  
+  const workLogSheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  const data = recurringSheet.getDataRange().getValues();
+  
+  let processedCount = 0;
+  
+  for (let i = 1; i < data.length; i++) {
+    const row = i + 1;
+    const recurringData = {
+      clientName: data[i][0],
+      clientEmail: data[i][1],
+      publication: data[i][2],
+      titleTemplate: data[i][3],
+      businessType: data[i][4],
+      rateType: data[i][5],
+      amount: data[i][6],
+      frequency: data[i][7],
+      startDate: data[i][8],
+      endDate: data[i][9],
+      lastGenerated: data[i][10],
+      nextDue: data[i][11],
+      status: data[i][12],
+      autoSendReminder: data[i][13]
+    };
+    
+    // Skip if not active
+    if (recurringData.status !== 'Active') continue;
+    
+    // Skip if missing required fields
+    if (!recurringData.clientName || !recurringData.clientEmail || !recurringData.amount) {
+      continue;
+    }
+    
+    // Calculate next due date if not set
+    if (!recurringData.nextDue) {
+      const nextDue = calculateNextDueDate(recurringData.startDate, recurringData.frequency);
+      recurringSheet.getRange(row, 12).setValue(nextDue);
+      recurringData.nextDue = nextDue;
+    }
+    
+    // Check if due
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dueDate = new Date(recurringData.nextDue);
+    dueDate.setHours(0, 0, 0, 0);
+    
+    if (dueDate <= today) {
+      // Check end date
+      if (recurringData.endDate) {
+        const endDate = new Date(recurringData.endDate);
+        if (today > endDate) {
+          recurringSheet.getRange(row, 13).setValue('Completed');
+          continue;
+        }
+      }
+      
+      // Generate invoice
+      const result = generateRecurringInvoice(recurringData, workLogSheet);
+      
+      if (result.success) {
+        // Update last generated
+        recurringSheet.getRange(row, 11).setValue(new Date());
+        
+        // Calculate next due date
+        const nextDue = calculateNextDueDate(new Date(), recurringData.frequency);
+        recurringSheet.getRange(row, 12).setValue(nextDue);
+        
+        processedCount++;
+        
+        logAuditEvent('recurring_invoice_generated', {
+          client: recurringData.clientName,
+          amount: recurringData.amount,
+          frequency: recurringData.frequency,
+          workLogRow: result.rowNumber
+        });
+      }
+    }
+  }
+  
+  if (processedCount > 0) {
+    console.log('✅ Generated ' + processedCount + ' recurring invoices');
+  }
+}
+
+/**
+ * Generate a single recurring invoice entry in Work Log
+ */
+function generateRecurringInvoice(recurringData, workLogSheet) {
+  try {
+    // Expand title template
+    const title = expandTemplate(recurringData.titleTemplate);
+    
+    // Add row to Work Log
+    const newRow = [
+      new Date(),
+      recurringData.clientName,
+      recurringData.clientEmail,
+      recurringData.publication,
+      recurringData.businessType,
+      recurringData.rateType,
+      title,
+      '',
+      '',
+      '',
+      recurringData.amount,
+      'Not paid',
+      '',
+      '',
+      '',
+      '',
+      ''
+    ];
+    
+    workLogSheet.appendRow(newRow);
+    const rowNumber = workLogSheet.getLastRow();
+    
+    // Generate invoice number
+    const invoiceNum = generateInvoiceNumber(recurringData.publication);
+    workLogSheet.getRange(rowNumber, COL.INVOICE_NUM + 1).setValue(invoiceNum);
+    
+    // Auto-send reminder if enabled
+    if (recurringData.autoSendReminder === 'Yes') {
+      Utilities.sleep(1000);
+      workLogSheet.getRange(rowNumber, COL.STATUS + 1).setValue('Reminder');
+    }
+    
+    return {
+      success: true,
+      rowNumber: rowNumber,
+      invoiceNumber: invoiceNum
+    };
+    
+  } catch (error) {
+    console.error('Failed to generate recurring invoice:', error);
+    logError('generateRecurringInvoice', error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Calculate next due date based on frequency
+ */
+function calculateNextDueDate(fromDate, frequency) {
+  const date = new Date(fromDate);
+  
+  switch (frequency) {
+    case 'Weekly':
+      date.setDate(date.getDate() + 7);
+      break;
+    case 'Bi-weekly':
+      date.setDate(date.getDate() + 14);
+      break;
+    case 'Monthly':
+      date.setMonth(date.getMonth() + 1);
+      break;
+    case 'Quarterly':
+      date.setMonth(date.getMonth() + 3);
+      break;
+    case 'Yearly':
+      date.setFullYear(date.getFullYear() + 1);
+      break;
+  }
+  
+  return date;
+}
+
+/**
+ * Expand template variables
+ */
+function expandTemplate(template) {
+  if (!template) return '';
+  
+  const now = new Date();
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+  
+  const weekNum = Math.ceil((now.getDate() + new Date(now.getFullYear(), now.getMonth(), 1).getDay()) / 7);
+  
+  return template
+    .replace('{month}', monthNames[now.getMonth()])
+    .replace('{year}', now.getFullYear())
+    .replace('{date}', Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd'))
+    .replace('{week}', weekNum);
+}
+
+/**
+ * Manual trigger for testing
+ */
+function testRecurringInvoices() {
+  processRecurringInvoices();
+  SpreadsheetApp.getUi().alert('✅ Recurring invoices processed. Check Work Log and Audit Log.');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         LOGGING SYSTEM                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function logAuditEvent(action, details) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let auditSheet = ss.getSheetByName('Audit Log');
+    
+    if (!auditSheet) {
+      auditSheet = ss.insertSheet('Audit Log');
+      auditSheet.appendRow(['Timestamp', 'User', 'Action', 'Details']);
+      auditSheet.getRange(1, 1, 1, 4)
+        .setFontWeight('bold')
+        .setBackground('#3498db')
+        .setFontColor('white');
+    }
+    
+    auditSheet.appendRow([
+      new Date(),
+      Session.getActiveUser().getEmail() || 'System',
+      action,
+      typeof details === 'object' ? JSON.stringify(details) : details
+    ]);
+  } catch (error) {
+    console.error('Failed to log audit event:', error);
+  }
+}
+
+function logError(context, error) {
+  console.error('[' + context + '] Error:', error);
+  logAuditEvent('error', {
+    context: context,
+    message: error.message || error.toString(),
+    stack: error.stack || ''
+  });
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    INVOICE NUMBER GENERATOR                                ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function generateInvoiceNumber(publication) {
+  const lock = LockService.getScriptLock();
+  
+  try {
+    lock.waitLock(10000);
+    
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+    const data = sheet.getDataRange().getValues();
+    
+    let maxNum = 0;
+    const prefix = CONFIG.INVOICE_PREFIX;
+    
+    for (let i = 1; i < data.length; i++) {
+      const invoiceNum = data[i][COL.INVOICE_NUM];
+      if (invoiceNum && invoiceNum.toString().startsWith(prefix)) {
+        const match = invoiceNum.toString().match(/-(\d{4})-/);
+        if (match) {
+          const num = parseInt(match[1]);
+          if (num > maxNum) maxNum = num;
+        }
+      }
+    }
+    
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const sequence = String(maxNum + 1).padStart(4, '0');
+    
+    const cleanPublication = publication ? 
+      publication.toString().replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '') : 
+      'General';
+    
+    return prefix + year + month + day + '-' + sequence + '-' + cleanPublication;
+    
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    NAME & PUBLICATION HELPERS                              ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function parseClientName(fullName) {
+  if (!fullName) {
+    return { salutation: '', firstName: '', lastName: '', fullName: '', formalName: '' };
+  }
+  
+  const salutations = ['Mr.', 'Ms.', 'Mrs.', 'Dr.', 'Prof.', 'Mr', 'Ms', 'Mrs', 'Dr', 'Prof'];
+  
+  let salutation = '';
+  let firstName = '';
+  let lastName = '';
+  
+  const parts = fullName.toString().trim().split(/\s+/);
+  
+  if (parts.length > 0) {
+    const firstPart = parts[0];
+    const normalizedFirst = firstPart.replace('.', '');
+    
+    const matchedSalutation = salutations.find(function(s) {
+      return s.replace('.', '').toLowerCase() === normalizedFirst.toLowerCase();
+    });
+    
+    if (matchedSalutation) {
+      salutation = firstPart.endsWith('.') ? firstPart : firstPart + '.';
+      parts.shift();
+    }
+  }
+  
+  if (parts.length >= 1) {
+    firstName = parts[0];
+  }
+  
+  if (parts.length >= 2) {
+    lastName = parts.slice(1).join(' ');
+  }
+  
+  let formalName = '';
+  if (salutation) {
+    formalName = salutation + ' ' + firstName + (lastName ? ' ' + lastName : '');
+  } else {
+    formalName = firstName + (lastName ? ' ' + lastName : '');
+  }
+  
+  return {
+    salutation: salutation,
+    firstName: firstName,
+    lastName: lastName,
+    fullName: fullName.toString().trim(),
+    formalName: formalName.trim()
+  };
+}
+
+function cleanPublicationName(publication) {
+  if (!publication) return '';
+  
+  let cleaned = publication.toString().trim();
+  
+  const extensions = [
+    '.com', '.org', '.net', '.io', '.co', '.in', '.uk', '.us', 
+    '.edu', '.gov', '.info', '.biz', '.co.uk', '.co.in', '.com.au',
+    '.media', '.news', '.blog', '.online', '.site', '.tech'
+  ];
+  
+  extensions.sort(function(a, b) { return b.length - a.length; });
+  
+  for (var i = 0; i < extensions.length; i++) {
+    var ext = extensions[i];
+    if (cleaned.toLowerCase().endsWith(ext)) {
+      cleaned = cleaned.substring(0, cleaned.length - ext.length);
+      break;
+    }
+  }
+  
+  return cleaned;
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                       DATE FORMATTING                                      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function formatDateForCompare(date) {
+  if (!date) return '';
+  const d = new Date(date);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + 
+         String(d.getDate()).padStart(2, '0');
+}
+
+function formatDisplayDate(date) {
+  if (!date) return 'N/A';
+  return Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), 'MMMM dd, yyyy');
+}
+
+function formatShortDate(date) {
+  if (!date) return 'N/A';
+  return Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), 'dd MMM yyyy');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    SEND REMINDER EMAIL (WITH INVOICE)                      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function sendConsolidatedReminder(articles) {
+  try {
+    const clientFullName = articles[0].client;
+    const clientEmail = articles[0].clientEmail;
+    const publication = articles[0].publication;
+    const isSingle = articles.length === 1;
+    
+    const clientInfo = parseClientName(clientFullName);
+    const greetingName = clientInfo.firstName || clientFullName;
+    
+    let totalAmount = 0;
+    let detailsHTML = '';
+    let invoiceNum = '';
+    
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+    
+    if (isSingle) {
+      const article = articles[0];
+      totalAmount = parseFloat(article.amount) || 0;
+      
+      if (!article.invoiceNum) {
+        article.invoiceNum = generateInvoiceNumber(article.publication);
+        sheet.getRange(article.rowIndex, COL.INVOICE_NUM + 1).setValue(article.invoiceNum);
+      }
+      invoiceNum = article.invoiceNum;
+      
+      detailsHTML = '<div style="background: #fff8e1; padding: 20px; border-left: 4px solid #f39c12; border-radius: 4px; margin: 20px 0;">' +
+        '<table style="width: 100%; border-collapse: collapse;">' +
+        '<tr><td style="padding: 8px 0; color: #555; width: 140px;"><strong>Title:</strong></td>' +
+        '<td style="padding: 8px 0;">' + article.title + '</td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Submission date:</strong></td>' +
+        '<td style="padding: 8px 0;">' + formatDisplayDate(article.submittedDate) + '</td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Document link:</strong></td>' +
+        '<td style="padding: 8px 0;"><a href="' + article.doclink + '" style="color: #3498db;">' + article.doclink + '</a></td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Invoice number:</strong></td>' +
+        '<td style="padding: 8px 0;">' + article.invoiceNum + '</td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Amount due:</strong></td>' +
+        '<td style="padding: 8px 0; font-size: 18px; color: #e74c3c;"><strong>₹' + totalAmount.toLocaleString('en-IN') + '</strong></td></tr>' +
+        '</table></div>';
+    } else {
+      invoiceNum = generateInvoiceNumber(publication);
+      var tableRows = '';
+      
+      articles.forEach(function(article, index) {
+        var amount = parseFloat(article.amount) || 0;
+        totalAmount += amount;
+        
+        sheet.getRange(article.rowIndex, COL.INVOICE_NUM + 1).setValue(invoiceNum);
+        
+        tableRows += '<tr>' +
+          '<td style="padding: 12px; border-bottom: 1px solid #eee; text-align: center;">' + (index + 1) + '</td>' +
+          '<td style="padding: 12px; border-bottom: 1px solid #eee;">' +
+          '<strong>' + article.title + '</strong><br>' +
+          '<small style="color: #666;">Submitted: ' + formatDisplayDate(article.submittedDate) + '<br>' +
+          '<a href="' + article.doclink + '" style="color: #3498db; font-size: 12px;">View Document</a></small></td>' +
+          '<td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">₹' + amount.toLocaleString('en-IN') + '</td></tr>';
+      });
+      
+      detailsHTML = '<div style="background: #fff8e1; padding: 20px; border-left: 4px solid #f39c12; border-radius: 4px; margin: 20px 0;">' +
+        '<p style="margin: 0 0 10px 0;"><strong>Invoice Number:</strong> ' + invoiceNum + '</p>' +
+        '<p style="margin: 0 0 15px 0;"><strong>' + articles.length + ' articles pending payment:</strong></p>' +
+        '<table style="width: 100%; border-collapse: collapse; background: white; border-radius: 4px;">' +
+        '<thead><tr style="background: #f39c12; color: white;">' +
+        '<th style="padding: 12px; text-align: center; width: 40px;">#</th>' +
+        '<th style="padding: 12px; text-align: left;">Article Details</th>' +
+        '<th style="padding: 12px; text-align: right; width: 100px;">Amount</th></tr></thead>' +
+        '<tbody>' + tableRows + '</tbody>' +
+        '<tfoot><tr style="background: #fef9e7;">' +
+        '<td colspan="2" style="padding: 15px; text-align: right;"><strong>Total Amount Due:</strong></td>' +
+        '<td style="padding: 15px; text-align: right; font-size: 18px; color: #e74c3c;"><strong>₹' + totalAmount.toLocaleString('en-IN') + '</strong></td>' +
+        '</tr></tfoot></table></div>';
+    }
+
+    articles.forEach(function(a) { a.invoiceNum = invoiceNum; });
+
+    var invoiceResult = createDueInvoicePDF(articles, invoiceNum);
+    var invoicePdf = invoiceResult.pdfBlob;
+    var invoiceUrl = invoiceResult.pdfUrl;
+
+    var subject = CONFIG.BUSINESS_NAME + '_Payment reminder';
+    
+    var htmlBody = '<div style="font-family: \'Segoe UI\', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">' +
+      getLogoHtml() +
+      '<p>Hi ' + greetingName + ',</p>' +
+      '<p>This is a gentle reminder regarding the pending payment for the submitted work.</p>' +
+      '<div style="background:#FFF8E1; padding: 10px 15px; border-radius: 6px; text-align: center; margin: 15px 0; display: inline-block; width: 90%">' +
+      '<span style="font-size: 18px; color:#F39C12; font-weight: bold;"> Quick Payment Nudge </span></div>' +
+      '<p><strong>Details for reference:</strong></p>' +
+      detailsHTML +
+      '<p>The invoice is attached here for your reference.</p>' +
+      '<p>Please let me know once the payment is processed or if you need any clarification from my end.</p>' +
+      '<p>Thank you.</p>' +
+      '<p>Best regards,<br><strong>' + CONFIG.YOUR_NAME + '</strong></p>' +
+      getEmailFooter() +
+      '</div>';
+
+    var emailParsed = parseEmailAddresses(clientEmail);
+    
+    GmailApp.sendEmail(emailParsed.to, subject, '', {
+      htmlBody: htmlBody,
+      attachments: [invoicePdf],
+      name: CONFIG.BUSINESS_NAME,
+      cc: emailParsed.cc || undefined
+    });
+
+    console.log('Reminder sent to ' + clientEmail + ' for ' + articles.length + ' article(s)');
+    
+    articles.forEach(function(a) {
+      sheet.getRange(a.rowIndex, COL.INVOICE_LINK + 1).setValue(invoiceUrl);
+    });
+    
+    return {
+      success: true,
+      invoiceNumber: invoiceNum,
+      invoiceUrl: invoiceUrl
+    };
+  } catch (error) {
+    console.error('Failed to send reminder:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                  SEND CONFIRMATION EMAIL                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function sendConsolidatedConfirmation(articles) {
+  try {
+    const clientFullName = articles[0].client;
+    const clientEmail = articles[0].clientEmail;
+    const publication = articles[0].publication;
+    const isSingle = articles.length === 1;
+    
+    const clientInfo = parseClientName(clientFullName);
+    const greetingName = clientInfo.firstName || clientFullName;
+    
+    const invoiceNumber = isSingle ? 
+      (articles[0].invoiceNum || generateInvoiceNumber(publication)) : 
+      generateInvoiceNumber(publication);
+    
+    articles.forEach(function(a) { a.invoiceNum = invoiceNumber; });
+    
+    const invoiceResult = createConsolidatedInvoicePDF(articles, invoiceNumber);
+    const invoicePdf = invoiceResult.pdfBlob;
+    const invoiceUrl = invoiceResult.pdfUrl;
+    
+    let totalAmount = 0;
+    let detailsHTML = '';
+    
+    const paymentDate = formatDisplayDate(articles[0].dateOfPayment);
+    const paymentType = articles[0].paymentType || 'N/A';
+    
+    if (isSingle) {
+      const article = articles[0];
+      totalAmount = parseFloat(article.amount) || 0;
+      
+      detailsHTML = '<div style="background: #e8f5e9; padding: 20px; border-left: 4px solid #27ae60; border-radius: 4px; margin: 20px 0;">' +
+        '<table style="width: 100%; border-collapse: collapse;">' +
+        '<tr><td style="padding: 8px 0; color: #555; width: 140px;"><strong>Title:</strong></td>' +
+        '<td style="padding: 8px 0;">' + article.title + '</td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Submission date:</strong></td>' +
+        '<td style="padding: 8px 0;">' + formatDisplayDate(article.submittedDate) + '</td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Document link:</strong></td>' +
+        '<td style="padding: 8px 0;"><a href="' + article.doclink + '" style="color: #3498db;">' + article.doclink + '</a></td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Invoice number:</strong></td>' +
+        '<td style="padding: 8px 0;">' + invoiceNumber + '</td></tr>' +
+        '<tr><td style="padding: 8px 0; color: #555;"><strong>Amount:</strong></td>' +
+        '<td style="padding: 8px 0; font-size: 18px; color: #27ae60;"><strong>₹' + totalAmount.toLocaleString('en-IN') + '</strong></td></tr>' +
+        '</table>' +
+        '<div style="background: #c8e6c9; padding: 12px; border-radius: 4px; margin-top: 15px;">' +
+        '<strong>Payment Details:</strong><br>' +
+        '<span style="color: #2e7d32;">Date: ' + paymentDate + ' | Mode: ' + paymentType + '</span></div></div>';
+    } else {
+      var tableRows = '';
+      
+      articles.forEach(function(article, index) {
+        var amount = parseFloat(article.amount) || 0;
+        totalAmount += amount;
+        
+        tableRows += '<tr>' +
+          '<td style="padding: 12px; border-bottom: 1px solid #eee; text-align: center;">' + (index + 1) + '</td>' +
+          '<td style="padding: 12px; border-bottom: 1px solid #eee;">' +
+          '<strong>' + article.title + '</strong><br>' +
+          '<small style="color: #666;">Submitted: ' + formatDisplayDate(article.submittedDate) + '<br>' +
+          '<a href="' + article.doclink + '" style="color: #3498db; font-size: 12px;">View Document</a></small></td>' +
+          '<td style="padding: 12px; border-bottom: 1px solid #eee; text-align: right;">₹' + amount.toLocaleString('en-IN') + '</td></tr>';
+      });
+      
+      detailsHTML = '<div style="background: #e8f5e9; padding: 20px; border-left: 4px solid #27ae60; border-radius: 4px; margin: 20px 0;">' +
+        '<p style="margin: 0 0 10px 0;"><strong>Invoice Number:</strong> ' + invoiceNumber + '</p>' +
+        '<p style="margin: 0 0 15px 0;"><strong>' + articles.length + ' articles included:</strong></p>' +
+        '<table style="width: 100%; border-collapse: collapse; background: white; border-radius: 4px;">' +
+        '<thead><tr style="background: #27ae60; color: white;">' +
+        '<th style="padding: 12px; text-align: center; width: 40px;">#</th>' +
+        '<th style="padding: 12px; text-align: left;">Article Details</th>' +
+        '<th style="padding: 12px; text-align: right; width: 100px;">Amount</th></tr></thead>' +
+        '<tbody>' + tableRows + '</tbody>' +
+        '<tfoot><tr style="background: #c8e6c9;">' +
+        '<td colspan="2" style="padding: 15px; text-align: right;"><strong>Total:</strong></td>' +
+        '<td style="padding: 15px; text-align: right; font-size: 18px; color: #27ae60;"><strong>₹' + totalAmount.toLocaleString('en-IN') + '</strong></td>' +
+        '</tr></tfoot></table>' +
+        '<div style="background: #a5d6a7; padding: 12px; border-radius: 4px; margin-top: 15px;">' +
+        '<strong>Payment Details:</strong><br>' +
+        '<span style="color: #1b5e20;">Date: ' + paymentDate + ' | Mode: ' + paymentType + '</span></div></div>';
+    }
+
+    var subject = CONFIG.BUSINESS_NAME + '_ Payment confirmation – ' + invoiceNumber;
+    
+    var htmlBody = '<div style="font-family: \'Segoe UI\', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">' +
+      getLogoHtml() +
+      '<p>Hi ' + greetingName + ',</p>' +
+      '<p>Good-day!</p>' +
+      '<p>Thank you for the payment! This email confirms that the payment has been received.</p>' +
+      '<p>The invoice is attached here for your reference.</p>' +
+      '<p><strong>Details:</strong></p>' +
+      detailsHTML +
+      '<p>Please let me know if you need any additional details from my end.</p>' +
+      '<p>Thank you, and I look forward to working with you again!</p>' +
+      '<p>Best regards,<br><strong>' + CONFIG.YOUR_NAME + '</strong></p>' +
+      getEmailFooter() +
+      '</div>';
+
+    var emailParsed = parseEmailAddresses(clientEmail);
+    
+    GmailApp.sendEmail(emailParsed.to, subject, '', {
+      htmlBody: htmlBody,
+      attachments: [invoicePdf],
+      name: CONFIG.BUSINESS_NAME,
+      cc: emailParsed.cc || undefined
+    });
+    
+    console.log('Confirmation sent to ' + clientEmail + ' for ' + articles.length + ' article(s)');
+    
+    return { 
+      success: true, 
+      invoiceNumber: invoiceNumber,
+      invoiceUrl: invoiceUrl
+    };
+  } catch (error) {
+    console.error('Failed to send confirmation:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     CREATE PAID INVOICE PDF                                ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function createConsolidatedInvoicePDF(articles, invoiceNumber) {
+  const folder = getInvoiceFolder();
+  const isSingle = articles.length === 1;
+  
+  var invoiceHtml;
+  if (isSingle) {
+    invoiceHtml = generateSingleInvoiceHTML(articles[0], invoiceNumber);
+  } else {
+    invoiceHtml = generateConsolidatedInvoiceHTML(articles, invoiceNumber);
+  }
+  
+  var htmlBlob = Utilities.newBlob(invoiceHtml, 'text/html', 'invoice.html');
+  var pdfBlob = htmlBlob.getAs('application/pdf').setName('Invoice_' + invoiceNumber + '.pdf');
+  
+  var pdfFile = folder.createFile(pdfBlob);
+  pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  
+  var pdfUrl = pdfFile.getUrl();
+  
+  return {
+    pdfBlob: pdfBlob,
+    pdfUrl: pdfUrl
+  };
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                  CREATE PAYMENT DUE INVOICE PDF                            ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function createDueInvoicePDF(articles, invoiceNumber) {
+  const folder = getInvoiceFolder();
+  const isSingle = articles.length === 1;
+  
+  var invoiceHtml;
+  if (isSingle) {
+    invoiceHtml = generateSingleInvoiceHTML_Due(articles[0], invoiceNumber);
+  } else {
+    invoiceHtml = generateConsolidatedInvoiceHTML_Due(articles, invoiceNumber);
+  }
+  
+  var htmlBlob = Utilities.newBlob(invoiceHtml, 'text/html', 'invoice.html');
+  var pdfBlob = htmlBlob.getAs('application/pdf').setName('Invoice_' + invoiceNumber + '_Due.pdf');
+  
+  var pdfFile = folder.createFile(pdfBlob);
+  pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var pdfUrl = pdfFile.getUrl();
+  
+  return {
+    pdfBlob: pdfBlob,
+    pdfUrl: pdfUrl
+  };
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                      GET LOGO AS BASE64                                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function getLogoBase64() {
+  try {
+    if (CONFIG.LOGO_FILE_ID && CONFIG.LOGO_FILE_ID !== "YOUR_LOGO_FILE_ID_HERE") {
+      var logoFile = DriveApp.getFileById(CONFIG.LOGO_FILE_ID);
+      var logoBlob = logoFile.getBlob();
+      var base64 = Utilities.base64Encode(logoBlob.getBytes());
+      var mimeType = logoBlob.getContentType();
+      return 'data:' + mimeType + ';base64,' + base64;
+    }
+  } catch (e) {
+    console.log('Logo not found: ' + e.message);
+  }
+  return null;
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                   SINGLE ARTICLE INVOICE HTML (PAID)                       ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function generateSingleInvoiceHTML(data, invoiceNumber) {
+  var formattedSubmitDate = data.submittedDate 
+    ? Utilities.formatDate(new Date(data.submittedDate), Session.getScriptTimeZone(), 'MMMM dd, yyyy') 
+    : 'N/A';
+  
+  var formattedPayDate = data.dateOfPayment 
+    ? Utilities.formatDate(new Date(data.dateOfPayment), Session.getScriptTimeZone(), 'MMMM dd, yyyy') 
+    : 'N/A';
+  
+  var invoiceDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM dd, yyyy');
+  
+  var amount = parseFloat(data.amount) || 0;
+  var formattedAmount = '₹' + amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  var primaryEmail = parseEmailAddresses(data.clientEmail).to || '';
+  var clientInfo = parseClientName(data.client);
+  var clientFormalName = clientInfo.formalName || data.client;
+  var cleanedPublication = cleanPublicationName(data.publication);
+  
+  var logoBase64 = getLogoBase64();
+  var logoHtml = logoBase64 
+    ? '<img src="' + logoBase64 + '" alt="' + CONFIG.BUSINESS_NAME + '" style="max-height: 45px; max-width: 150px;">'
+    : '<span style="font-size: 26px; font-weight: bold; color: #ffffff;"> ' + CONFIG.BUSINESS_NAME + '</span>';
+
+  var bankDetailsHtml = 'Bank: ' + CONFIG.BANK_DETAILS.bankName + '<br>' +
+    'Account: ' + CONFIG.BANK_DETAILS.accountName + '<br>' +
+    'A/C No: ' + CONFIG.BANK_DETAILS.accountNumber + '<br>' +
+    'IFSC: ' + CONFIG.BANK_DETAILS.ifscCode + '<br>' +
+    'UPI: ' + CONFIG.BANK_DETAILS.upiId;
+
+  var docLinkSection = '';
+  if (data.doclink) {
+    docLinkSection = '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">' +
+      '<tr><td style="padding: 12px 15px; background-color: #fff8f5 !important; border-left: 4px solid #FF5600; -webkit-print-color-adjust: exact;">' +
+      '<div style="color: #FF5600; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px;">📄 Document Link</div>' +
+      '<a href="' + data.doclink + '" style="color: #FF5600; font-size: 11px; word-break: break-all;">' + data.doclink + '</a>' +
+      '</td></tr></table>';
+  }
+
+  return '<!DOCTYPE html>' +
+    '<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<title>Invoice ' + invoiceNumber + '</title>' +
+    '<style>' +
+    '* { margin: 0; padding: 0; box-sizing: border-box; }' +
+    'body { font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #333; background-color: #ffffff; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }' +
+    '.invoice-container { max-width: 800px; margin: 0 auto; background-color: #ffffff; }' +
+    '.section-title { color: #FF5600; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #FF5600; padding-bottom: 5px; margin-bottom: 10px; display: inline-block; }' +
+    '.notes-section { background-color: #fff8f5 !important; border-left: 4px solid #FF5600; padding: 15px; -webkit-print-color-adjust: exact !important; }' +
+    '@media print { body { -webkit-print-color-adjust: exact !important; } }' +
+    '</style></head><body>' +
+    '<div class="invoice-container">' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="width: 50%; padding: 25px 30px; background-color: #FF5600 !important; color: #ffffff;">' +
+    logoHtml +
+    '<div style="font-size: 13px; color: #ffffff; opacity: 0.9; margin-top: 5px;">' + CONFIG.BUSINESS_NAME + '</div></td>' +
+    '<td style="width: 50%; padding: 25px 30px; background-color: #FF5600 !important; color: #ffffff; text-align: right;">' +
+    '<div style="font-size: 36px; font-weight: 300; letter-spacing: 3px; color: #ffffff;">INVOICE</div>' +
+    '<div style="margin-top: 10px;"><span style="background-color: #d4edda !important; color: #155724; padding: 5px 15px; border-radius: 15px; font-size: 11px; font-weight: bold; -webkit-print-color-adjust: exact;">✓ PAID</span></div>' +
+    '</td></tr></table>' +
+    
+    '<div style="padding: 25px 30px;">' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 25px;">' +
+    '<tr><td style="width: 50%; vertical-align: top; padding: 10px 0;">' +
+    '<div class="section-title">Bill To</div>' +
+    '<div style="line-height: 1.8; color: #555;">' +
+    '<strong style="color: #333; font-size: 15px;">' + clientFormalName + '</strong><br>' +
+    (cleanedPublication ? cleanedPublication + '<br>' : '') +
+    primaryEmail + '</div></td>' +
+    '<td style="width: 50%; vertical-align: top; padding: 10px 0; text-align: right;">' +
+    '<div class="section-title">Invoice Details</div>' +
+    '<table cellpadding="0" cellspacing="0" border="0" style="margin-left: auto;">' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Invoice Number:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-weight: bold; font-size: 12px;">' + invoiceNumber + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Invoice Date:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-size: 12px;">' + invoiceDate + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Submission Date:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-size: 12px;">' + formattedSubmitDate + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Payment Date:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-size: 12px;">' + formattedPayDate + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Payment Method:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-size: 12px;">' + (data.paymentType || 'N/A') + '</td></tr>' +
+    '</table></td></tr></table>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px; border-collapse: collapse;">' +
+    '<thead><tr style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<th style="width: 45%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; text-align: left; border: 1px solid #FF5600;">Description</th>' +
+    '<th style="width: 15%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Words</th>' +
+    '<th style="width: 20%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Rate Type</th>' +
+    '<th style="width: 20%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; text-align: right; border: 1px solid #FF5600;">Amount</th>' +
+    '</tr></thead>' +
+    '<tbody><tr>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px;"><strong>' + data.title + '</strong><br>' +
+    '<span style="font-size: 11px; color: #888;">' + (data.businessType || 'Content Writing') + '</span></td>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px; text-align: center;">' + (data.wordCount || '-') + '</td>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px; text-align: center;">' + (data.rateType || 'Per Article') + '</td>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px; text-align: right; font-weight: 500;">' + formattedAmount + '</td>' +
+    '</tr></tbody></table>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">' +
+    '<tr><td style="width: 60%;"></td><td style="width: 40%;">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0">' +
+    '<tr style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<td style="padding: 12px 15px; font-size: 14px; font-weight: bold; color: #ffffff; background-color: #FF5600 !important;">Total Paid</td>' +
+    '<td style="padding: 12px 15px; font-size: 14px; font-weight: bold; color: #ffffff; background-color: #FF5600 !important; text-align: right;">' + formattedAmount + '</td>' +
+    '</tr></table></td></tr></table>' +
+    
+    docLinkSection +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">' +
+    '<tr><td style="width: 100%; vertical-align: top; padding: 12px 15px; background-color: #fafafa; border: 1px solid #eeeeee;">' +
+    '<div style="color: #FF5600; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Bank Details</div>' +
+    '<p style="color: #555; font-size: 11px; line-height: 1.6; margin: 0;">' + bankDetailsHtml + '</p>' +
+    '</td></tr></table>' +
+    
+    '<div class="notes-section">' +
+    '<div style="color: #FF5600; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Thank You!</div>' +
+    '<p style="color: #666; font-size: 11px; line-height: 1.6; margin: 0;">Appreciate the collaboration. Always a pleasure working together.</p>' +
+    '</div></div>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #333333 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="padding: 15px 30px; text-align: center; background-color: #333333 !important; color: #ffffff;">' +
+    '<div style="font-size: 12px; margin-bottom: 5px; color: #ffffff;">Thank you for choosing ' + CONFIG.BUSINESS_NAME + '!</div>' +
+    '<div style="font-size: 10px; color: #cccccc;">📧 ' + CONFIG.YOUR_EMAIL + ' &nbsp;|&nbsp; 📞 ' + CONFIG.YOUR_PHONE + '</div>' +
+    '</td></tr></table>' +
+    
+    '</div></body></html>';
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                 CONSOLIDATED INVOICE HTML (Multiple Articles - PAID)       ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function generateConsolidatedInvoiceHTML(articles, invoiceNumber) {
+  var clientFullName = articles[0].client;
+  var clientEmailRaw = articles[0].clientEmail;
+  var clientEmail = parseEmailAddresses(clientEmailRaw).to || '';
+  var publicationRaw = articles[0].publication || '';
+  
+  var clientInfo = parseClientName(clientFullName);
+  var clientFormalName = clientInfo.formalName || clientFullName;
+  var cleanedPublication = cleanPublicationName(publicationRaw);
+  
+  var invoiceDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd MMM yyyy');
+  var formattedPayDate = articles[0].dateOfPayment 
+    ? Utilities.formatDate(new Date(articles[0].dateOfPayment), Session.getScriptTimeZone(), 'dd MMM yyyy') 
+    : 'N/A';
+  var paymentType = articles[0].paymentType || 'N/A';
+  
+  // FIX: Proper total calculation
+  var totalAmount = 0;
+  articles.forEach(function(a) { totalAmount += parseFloat(a.amount) || 0; });
+  var formattedTotal = '₹' + totalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  
+  var logoBase64 = getLogoBase64();
+  var logoHtml = logoBase64 
+    ? '<img src="' + logoBase64 + '" alt="' + CONFIG.BUSINESS_NAME + '" style="max-height: 40px; max-width: 120px;">'
+    : '<span style="font-size: 20px; font-weight: bold; color: #ffffff;">✒️ ' + CONFIG.BUSINESS_NAME + '</span>';
+
+  var bankDetailsHtml = 'Bank: ' + CONFIG.BANK_DETAILS.bankName + ' | A/C: ' + CONFIG.BANK_DETAILS.accountName + 
+    ' | A/C No: ' + CONFIG.BANK_DETAILS.accountNumber + ' | IFSC: ' + CONFIG.BANK_DETAILS.ifscCode + 
+    ' | UPI: ' + CONFIG.BANK_DETAILS.upiId;
+
+  var articleRowsHtml = '';
+  var docLinksHtml = '';
+  
+  articles.forEach(function(article, index) {
+    var amount = parseFloat(article.amount) || 0;
+    var formattedAmount = '₹' + amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var submittedDate = article.submittedDate 
+      ? Utilities.formatDate(new Date(article.submittedDate), Session.getScriptTimeZone(), 'dd MMM yy')
+      : 'N/A';
+    
+    var titleShort = article.title.length > 30 ? article.title.substring(0, 27) + '...' : article.title;
+    var bgColor = index % 2 === 0 ? '#ffffff' : '#fafafa';
+    
+    articleRowsHtml += '<tr style="background-color: ' + bgColor + ' !important; -webkit-print-color-adjust: exact;">' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: center;">' + (index + 1) + '</td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px;"><strong>' + titleShort + '</strong></td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: center;">' + submittedDate + '</td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: center;">' + (article.wordCount || '-') + '</td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: right; font-weight: 500;">' + formattedAmount + '</td></tr>';
+    
+    if (article.doclink) {
+      var titleTrunc = article.title.substring(0, 25) + (article.title.length > 25 ? '...' : '');
+      docLinksHtml += '<div style="margin-bottom: 3px; font-size: 9px;">' +
+        '<span style="color: #333;">' + (index + 1) + '. ' + titleTrunc + ': </span>' +
+        '<a href="' + article.doclink + '" style="color: #FF5600; word-break: break-all;">' + article.doclink + '</a></div>';
+    }
+  });
+
+  var docLinksSection = '';
+  if (docLinksHtml) {
+    docLinksSection = '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">' +
+      '<tr><td style="padding: 8px 10px; background-color: #fff8f5 !important; border-left: 3px solid #FF5600; -webkit-print-color-adjust: exact;">' +
+      '<div style="color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">📄 Document Links</div>' +
+      docLinksHtml + '</td></tr></table>';
+  }
+
+  return '<!DOCTYPE html>' +
+    '<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<title>Invoice ' + invoiceNumber + '</title>' +
+    '<style>' +
+    '* { margin: 0; padding: 0; box-sizing: border-box; }' +
+    'body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #333; background-color: #ffffff; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }' +
+    '.invoice-container { max-width: 800px; margin: 0 auto; background-color: #ffffff; }' +
+    '.section-title { color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #FF5600; padding-bottom: 3px; margin-bottom: 6px; display: inline-block; }' +
+    '@media print { body { -webkit-print-color-adjust: exact !important; } @page { margin: 0.3in; } }' +
+    '</style></head><body>' +
+    '<div class="invoice-container">' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="width: 50%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff;">' +
+    logoHtml +
+    '<div style="font-size: 10px; font-weight: bold; color: #ffffff; opacity: 0.9; margin-top: 3px;">' + CONFIG.BUSINESS_NAME + '</div></td>' +
+    '<td style="width: 50%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; text-align: right;">' +
+    '<div style="font-size: 24px; font-weight: 300; letter-spacing: 2px; color: #ffffff;">INVOICE</div>' +
+    '<div style="margin-top: 5px;"><span style="background-color: #d4edda !important; color: #155724; padding: 3px 10px; border-radius: 10px; font-size: 9px; font-weight: bold; -webkit-print-color-adjust: exact;">✓ PAID</span></div>' +
+    '</td></tr></table>' +
+    
+    '<div style="padding: 12px 15px;">' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 10px;">' +
+    '<tr><td style="width: 50%; vertical-align: top; padding: 5px 0;">' +
+    '<div class="section-title">Bill To</div>' +
+    '<div style="line-height: 1.4; color: #555; font-size: 10px;">' +
+    '<strong style="color: #333; font-size: 11px;">' + clientFormalName + '</strong><br>' +
+    (cleanedPublication ? cleanedPublication + '<br>' : '') +
+    (clientEmail || '') + '</div></td>' +
+    '<td style="width: 50%; vertical-align: top; padding: 5px 0; text-align: right;">' +
+    '<div class="section-title">Invoice Details</div>' +
+    '<table cellpadding="0" cellspacing="0" border="0" style="margin-left: auto; font-size: 9px;">' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Invoice #:</td>' +
+    '<td style="padding: 2px 0; color: #333; font-weight: bold;">' + invoiceNumber + '</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Date:</td>' +
+    '<td style="padding: 2px 0; color: #333;">' + invoiceDate + '</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Payment Date:</td>' +
+    '<td style="padding: 2px 0; color: #333;">' + formattedPayDate + '</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Payment Method:</td>' +
+    '<td style="padding: 2px 0; color: #333;">' + paymentType + '</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Articles:</td>' +
+    '<td style="padding: 2px 0; color: #333; font-weight: bold;">' + articles.length + '</td></tr>' +
+    '</table></td></tr></table>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px; border-collapse: collapse;">' +
+    '<thead><tr style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<th style="width: 6%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">#</th>' +
+    '<th style="width: 44%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: left; border: 1px solid #FF5600;">Article Title</th>' +
+    '<th style="width: 16%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Submitted</th>' +
+    '<th style="width: 14%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Words</th>' +
+    '<th style="width: 20%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: right; border: 1px solid #FF5600;">Amount</th>' +
+    '</tr></thead><tbody>' + articleRowsHtml + '</tbody></table>' +
+    
+    // FIX: Removed article count
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">' +
+    '<tr><td style="width: 60%;"></td><td style="width: 40%;">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0">' +
+    '<tr style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<td style="padding: 8px 10px; font-size: 12px; font-weight: bold; color: #ffffff; background-color: #FF5600 !important;">Total Paid</td>' +
+    '<td style="padding: 8px 10px; font-size: 12px; font-weight: bold; color: #ffffff; background-color: #FF5600 !important; text-align: right;">' + formattedTotal + '</td>' +
+    '</tr></table></td></tr></table>' +
+    
+    docLinksSection +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">' +
+    '<tr><td style="padding: 8px 10px; background-color: #fafafa; border: 1px solid #eeeeee;">' +
+    '<div style="color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Bank Details</div>' +
+    '<p style="color: #555; font-size: 9px; line-height: 1.4; margin: 0;">' + bankDetailsHtml + '</p>' +
+    '</td></tr></table>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0">' +
+    '<tr><td style="padding: 8px 10px; background-color: #fff8f5 !important; border-left: 3px solid #FF5600; -webkit-print-color-adjust: exact;">' +
+    '<div style="color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 3px;">Thank You!</div>' +
+    '<p style="color: #666; font-size: 9px; line-height: 1.4; margin: 0;">Appreciate the collaboration. Always a pleasure working together.</p>' +
+    '</td></tr></table></div>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #333333 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="padding: 8px 15px; text-align: center; background-color: #333333 !important; color: #ffffff;">' +
+    '<div style="font-size: 10px; color: #ffffff;">Thank you for choosing ' + CONFIG.BUSINESS_NAME + '!</div>' +
+    '<div style="font-size: 9px; color: #cccccc; margin-top: 2px;">📧 ' + CONFIG.YOUR_EMAIL + ' &nbsp;|&nbsp; 📞 ' + CONFIG.YOUR_PHONE + '</div>' +
+    '</td></tr></table>' +
+    
+    '</div></body></html>';
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║               SINGLE ARTICLE INVOICE HTML (PAYMENT DUE)                    ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function generateSingleInvoiceHTML_Due(data, invoiceNumber) {
+  var formattedSubmitDate = data.submittedDate 
+    ? Utilities.formatDate(new Date(data.submittedDate), Session.getScriptTimeZone(), 'MMMM dd, yyyy') 
+    : 'N/A';
+  
+  var invoiceDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM dd, yyyy');
+  
+  var amount = parseFloat(data.amount) || 0;
+  var formattedAmount = '₹' + amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  var primaryEmail = parseEmailAddresses(data.clientEmail).to || '';
+  var clientInfo = parseClientName(data.client);
+  var clientFormalName = clientInfo.formalName || data.client;
+  var cleanedPublication = cleanPublicationName(data.publication);
+  
+  var logoBase64 = getLogoBase64();
+  var logoHtml = logoBase64 
+    ? '<img src="' + logoBase64 + '" alt="' + CONFIG.BUSINESS_NAME + '" style="max-height: 45px; max-width: 150px;">'
+    : '<span style="font-size: 26px; font-weight: bold; color: #ffffff;"> ' + CONFIG.BUSINESS_NAME + '</span>';
+
+  var bankDetailsHtml = 'Bank: ' + CONFIG.BANK_DETAILS.bankName + '<br>' +
+    'Account: ' + CONFIG.BANK_DETAILS.accountName + '<br>' +
+    'A/C No: ' + CONFIG.BANK_DETAILS.accountNumber + '<br>' +
+    'IFSC: ' + CONFIG.BANK_DETAILS.ifscCode + '<br>' +
+    'UPI: ' + CONFIG.BANK_DETAILS.upiId;
+
+  var docLinkSection = '';
+  if (data.doclink) {
+    docLinkSection = '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">' +
+      '<tr><td style="padding: 12px 15px; background-color: #fff8f5 !important; border-left: 4px solid #FF5600; -webkit-print-color-adjust: exact;">' +
+      '<div style="color: #FF5600; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px;">📄 Document Link</div>' +
+      '<a href="' + data.doclink + '" style="color: #FF5600; font-size: 11px; word-break: break-all;">' + data.doclink + '</a>' +
+      '</td></tr></table>';
+  }
+
+  return '<!DOCTYPE html>' +
+    '<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<title>Invoice ' + invoiceNumber + '</title>' +
+    '<style>' +
+    '* { margin: 0; padding: 0; box-sizing: border-box; }' +
+    'body { font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #333; background-color: #ffffff; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }' +
+    '.invoice-container { max-width: 800px; margin: 0 auto; background-color: #ffffff; }' +
+    '.section-title { color: #FF5600; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #FF5600; padding-bottom: 5px; margin-bottom: 10px; display: inline-block; }' +
+    '.notes-section { background-color: #fff8f5 !important; border-left: 4px solid #FF5600; padding: 15px; -webkit-print-color-adjust: exact !important; }' +
+    '@media print { body { -webkit-print-color-adjust: exact !important; } }' +
+    '</style></head><body>' +
+    '<div class="invoice-container">' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="width: 50%; padding: 25px 30px; background-color: #FF5600 !important; color: #ffffff;">' +
+    logoHtml +
+    '<div style="font-size: 13px; color: #ffffff; opacity: 0.9; margin-top: 5px;">' + CONFIG.BUSINESS_NAME + '</div></td>' +
+    '<td style="width: 50%; padding: 25px 30px; background-color: #FF5600 !important; color: #ffffff; text-align: right;">' +
+    '<div style="font-size: 36px; font-weight: 300; letter-spacing: 3px; color: #ffffff;">INVOICE</div>' +
+    '<div style="margin-top: 10px;"><span style="background-color: #fff3cd !important; color: #856404; padding: 5px 15px; border-radius: 15px; font-size: 11px; font-weight: bold; -webkit-print-color-adjust: exact;">⏳ PAYMENT DUE</span></div>' +
+    '</td></tr></table>' +
+    
+    '<div style="padding: 25px 30px;">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 25px;">' +
+    '<tr><td style="width: 50%; vertical-align: top; padding: 10px 0;">' +
+    '<div class="section-title">Bill To</div>' +
+    '<div style="line-height: 1.8; color: #555;">' +
+    '<strong style="color: #333; font-size: 15px;">' + clientFormalName + '</strong><br>' +
+    (cleanedPublication ? cleanedPublication + '<br>' : '') +
+    primaryEmail + '</div></td>' +
+    '<td style="width: 50%; vertical-align: top; padding: 10px 0; text-align: right;">' +
+    '<div class="section-title">Invoice Details</div>' +
+    '<table cellpadding="0" cellspacing="0" border="0" style="margin-left: auto;">' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Invoice Number:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-weight: bold; font-size: 12px;">' + invoiceNumber + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Invoice Date:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-size: 12px;">' + invoiceDate + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Submission Date:</td>' +
+    '<td style="padding: 4px 0; color: #333; font-size: 12px;">' + formattedSubmitDate + '</td></tr>' +
+    '<tr><td style="padding: 4px 15px 4px 0; color: #888; font-size: 12px;">Status:</td>' +
+    '<td style="padding: 4px 0; color: #e67e22; font-weight: bold; font-size: 12px;">Pending</td></tr>' +
+    '</table></td></tr></table>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px; border-collapse: collapse;">' +
+    '<thead><tr style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<th style="width: 45%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; text-align: left; border: 1px solid #FF5600;">Description</th>' +
+    '<th style="width: 15%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Words</th>' +
+    '<th style="width: 20%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Rate Type</th>' +
+    '<th style="width: 20%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; font-size: 11px; font-weight: bold; text-transform: uppercase; text-align: right; border: 1px solid #FF5600;">Amount</th>' +
+    '</tr></thead>' +
+    '<tbody><tr>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px;"><strong>' + data.title + '</strong><br>' +
+    '<span style="font-size: 11px; color: #888;">' + (data.businessType || 'Content Writing') + '</span></td>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px; text-align: center;">' + (data.wordCount || '-') + '</td>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px; text-align: center;">' + (data.rateType || 'Per Article') + '</td>' +
+    '<td style="padding: 12px 15px; border: 1px solid #eeeeee; font-size: 13px; text-align: right; font-weight: 500;">' + formattedAmount + '</td>' +
+    '</tr></tbody></table>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">' +
+    '<tr><td style="width: 60%;"></td><td style="width: 40%;">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0">' +
+    '<tr style="background-color: #ff5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<td style="padding: 12px 15px; font-size: 14px; font-weight: bold; color: #ffffff; background-color: #ff5600 !important;">Total Amount Due</td>' +
+    '<td style="padding: 12px 15px; font-size: 14px; font-weight: bold; color: #ffffff; background-color: #ff5600 !important; text-align: right;">' + formattedAmount + '</td>' +
+    '</tr></table></td></tr></table>' +
+    
+    docLinkSection +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">' +
+    '<tr><td style="width: 100%; vertical-align: top; padding: 12px 15px; background-color: #e8f5e9; border: 1px solid #c8e6c9;">' +
+    '<div style="color: #2e7d32; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Payment Details</div>' +
+    '<p style="color: #555; font-size: 11px; line-height: 1.6; margin: 0;">' + bankDetailsHtml + '</p>' +
+    '</td></tr></table>' +
+    
+    '<div class="notes-section">' +
+    '<div style="color: #FF5600; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Note</div>' +
+    '<p style="color: #666; font-size: 11px; line-height: 1.6; margin: 0;">Please release the payment and let this invoice find its happily-ever-after. Until the next brief. </p>' +
+    '</div></div>' +
+    
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #333333 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="padding: 15px 30px; text-align: center; background-color: #333333 !important; color: #ffffff;">' +
+    '<div style="font-size: 12px; margin-bottom: 5px; color: #ffffff;">Thank you for choosing ' + CONFIG.BUSINESS_NAME + '!</div>' +
+    '<div style="font-size: 10px; color: #cccccc;">📧 ' + CONFIG.YOUR_EMAIL + ' &nbsp;|&nbsp; 📞 ' + CONFIG.YOUR_PHONE + '</div>' +
+    '</td></tr></table>' +
+    
+    '</div></body></html>';
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║         CONSOLIDATED INVOICE HTML (Multiple Articles - PAYMENT DUE)        ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function generateConsolidatedInvoiceHTML_Due(articles, invoiceNumber) {
+  var clientFullName = articles[0].client;
+  var clientEmailRaw = articles[0].clientEmail;
+  var clientEmail = parseEmailAddresses(clientEmailRaw).to || '';
+  var publicationRaw = articles[0].publication || '';
+  
+  var clientInfo = parseClientName(clientFullName);
+  var clientFormalName = clientInfo.formalName || clientFullName;
+  var cleanedPublication = cleanPublicationName(publicationRaw);
+  
+  var invoiceDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd MMM yyyy');
+  
+  // FIX: Proper total calculation
+  var totalAmount = 0;
+  articles.forEach(function(a) { 
+    totalAmount += parseFloat(a.amount) || 0; 
+  });
+  var formattedTotal = '₹' + totalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  
+  var logoBase64 = getLogoBase64();
+  var logoHtml = logoBase64 
+    ? '<img src="' + logoBase64 + '" alt="' + CONFIG.BUSINESS_NAME + '" style="max-height: 40px; max-width: 120px;">'
+    : '<span style="font-size: 20px; font-weight: bold; color: #ffffff;">✒️ ' + CONFIG.BUSINESS_NAME + '</span>';
+
+  var bankDetailsHtml = 'Bank: ' + CONFIG.BANK_DETAILS.bankName + ' | A/C: ' + CONFIG.BANK_DETAILS.accountName + 
+    ' | A/C No: ' + CONFIG.BANK_DETAILS.accountNumber + ' | IFSC: ' + CONFIG.BANK_DETAILS.ifscCode + 
+    ' | UPI: ' + CONFIG.BANK_DETAILS.upiId;
+
+  var articleRowsHtml = '';
+  var docLinksHtml = '';
+  
+  articles.forEach(function(article, index) {
+    var amount = parseFloat(article.amount) || 0;
+    var formattedAmount = '₹' + amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var submittedDate = article.submittedDate 
+      ? Utilities.formatDate(new Date(article.submittedDate), Session.getScriptTimeZone(), 'dd MMM yy')
+      : 'N/A';
+    
+    // Shorten titles to fit one page
+    var titleShort = article.title.length > 30 ? article.title.substring(0, 27) + '...' : article.title;
+    var bgColor = index % 2 === 0 ? '#ffffff' : '#fafafa';
+    
+    articleRowsHtml += '<tr style="background-color: ' + bgColor + ' !important; -webkit-print-color-adjust: exact;">' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: center;">' + (index + 1) + '</td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px;"><strong>' + titleShort + '</strong></td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: center;">' + submittedDate + '</td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: center;">' + (article.wordCount || '-') + '</td>' +
+      '<td style="padding: 6px 8px; border: 1px solid #eeeeee; font-size: 10px; text-align: right; font-weight: 500;">' + formattedAmount + '</td></tr>';
+    
+    if (article.doclink) {
+      var titleTrunc = article.title.substring(0, 25) + (article.title.length > 25 ? '...' : '');
+      docLinksHtml += '<div style="margin-bottom: 3px; font-size: 9px;">' +
+        '<span style="color: #333;">' + (index + 1) + '. ' + titleTrunc + ': </span>' +
+        '<a href="' + article.doclink + '" style="color: #FF5600; word-break: break-all;">' + article.doclink + '</a></div>';
+    }
+  });
+
+  var docLinksSection = '';
+  if (docLinksHtml) {
+    docLinksSection = '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">' +
+      '<tr><td style="padding: 8px 10px; background-color: #fff8f5 !important; border-left: 3px solid #FF5600; -webkit-print-color-adjust: exact;">' +
+      '<div style="color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">📄 Document Links</div>' +
+      docLinksHtml + '</td></tr></table>';
+  }
+
+  return '<!DOCTYPE html>' +
+    '<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<title>Invoice ' + invoiceNumber + '</title>' +
+    '<style>' +
+    '* { margin: 0; padding: 0; box-sizing: border-box; }' +
+    'body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #333; background-color: #ffffff; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }' +
+    '.invoice-container { max-width: 800px; margin: 0 auto; background-color: #ffffff; }' +
+    '.section-title { color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #FF5600; padding-bottom: 3px; margin-bottom: 6px; display: inline-block; }' +
+    '@media print { body { -webkit-print-color-adjust: exact !important; } @page { margin: 0.3in; } }' +
+    '</style></head><body>' +
+    '<div class="invoice-container">' +
+    
+    // Compact Header
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="width: 50%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff;">' +
+    logoHtml +
+    '<div style="font-size: 10px; font-weight: bold; color: #ffffff; opacity: 0.9; margin-top: 3px;">' + CONFIG.BUSINESS_NAME + '</div></td>' +
+    '<td style="width: 50%; padding: 12px 15px; background-color: #FF5600 !important; color: #ffffff; text-align: right;">' +
+    '<div style="font-size: 24px; font-weight: 300; letter-spacing: 2px; color: #ffffff;">INVOICE</div>' +
+    '<div style="margin-top: 5px;"><span style="background-color: #fff3cd !important; color: #856404; padding: 3px 10px; border-radius: 10px; font-size: 9px; font-weight: bold; -webkit-print-color-adjust: exact;">⏳ PAYMENT DUE</span></div>' +
+    '</td></tr></table>' +
+    
+    // Compact Body
+    '<div style="padding: 12px 15px;">' +
+    
+    // Billing Info (Compact)
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 10px;">' +
+    '<tr><td style="width: 50%; vertical-align: top; padding: 5px 0;">' +
+    '<div class="section-title">Bill To</div>' +
+    '<div style="line-height: 1.4; color: #555; font-size: 10px;">' +
+    '<strong style="color: #333; font-size: 11px;">' + clientFormalName + '</strong><br>' +
+    (cleanedPublication ? cleanedPublication + '<br>' : '') +
+    (clientEmail || '') + '</div></td>' +
+    '<td style="width: 50%; vertical-align: top; padding: 5px 0; text-align: right;">' +
+    '<div class="section-title">Invoice Details</div>' +
+    '<table cellpadding="0" cellspacing="0" border="0" style="margin-left: auto; font-size: 9px;">' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Invoice #:</td>' +
+    '<td style="padding: 2px 0; color: #333; font-weight: bold;">' + invoiceNumber + '</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Date:</td>' +
+    '<td style="padding: 2px 0; color: #333;">' + invoiceDate + '</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Status:</td>' +
+    '<td style="padding: 2px 0; color: #e67e22; font-weight: bold;">Pending</td></tr>' +
+    '<tr><td style="padding: 2px 8px 2px 0; color: #888;">Articles:</td>' +
+    '<td style="padding: 2px 0; color: #333; font-weight: bold;">' + articles.length + '</td></tr>' +
+    '</table></td></tr></table>' +
+    
+    // Compact Articles Table
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px; border-collapse: collapse;">' +
+    '<thead><tr style="background-color: #FF5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<th style="width: 6%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">#</th>' +
+    '<th style="width: 44%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: left; border: 1px solid #FF5600;">Article Title</th>' +
+    '<th style="width: 16%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Submitted</th>' +
+    '<th style="width: 14%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: center; border: 1px solid #FF5600;">Words</th>' +
+    '<th style="width: 20%; padding: 6px 5px; background-color: #FF5600 !important; color: #ffffff; font-size: 9px; font-weight: bold; text-transform: uppercase; text-align: right; border: 1px solid #FF5600;">Amount</th>' +
+    '</tr></thead><tbody>' + articleRowsHtml + '</tbody></table>' +
+    
+    // FIX: Removed article count from total
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">' +
+    '<tr><td style="width: 60%;"></td><td style="width: 40%;">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0">' +
+    '<tr style="background-color: #ff5600 !important; -webkit-print-color-adjust: exact;">' +
+    '<td style="padding: 8px 10px; font-size: 12px; font-weight: bold; color: #ffffff; background-color: #ff5600 !important;">Total Amount Due</td>' +
+    '<td style="padding: 8px 10px; font-size: 12px; font-weight: bold; color: #ffffff; background-color: #ff5600 !important; text-align: right;">' + formattedTotal + '</td>' +
+    '</tr></table></td></tr></table>' +
+    
+    // Compact Document Links
+    docLinksSection +
+    
+    // Compact Bank Details
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">' +
+    '<tr><td style="padding: 8px 10px; background-color: #e8f5e9; border: 1px solid #c8e6c9;">' +
+    '<div style="color: #2e7d32; font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px;">Payment Details</div>' +
+    '<p style="color: #555; font-size: 9px; line-height: 1.4; margin: 0;">' + bankDetailsHtml + '</p>' +
+    '</td></tr></table>' +
+    
+    // Compact Note
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0">' +
+    '<tr><td style="padding: 8px 10px; background-color: #fff8f5 !important; border-left: 3px solid #FF5600; -webkit-print-color-adjust: exact;">' +
+    '<div style="color: #FF5600; font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 3px;">Note</div>' +
+    '<p style="color: #666; font-size: 9px; line-height: 1.4; margin: 0;">Please release the payment and let this invoice find its happily-ever-after. Until the next brief.</p>' +
+    '</td></tr></table></div>' +
+    
+    // Compact Footer
+    '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #333333 !important; -webkit-print-color-adjust: exact;">' +
+    '<tr><td style="padding: 8px 15px; text-align: center; background-color: #333333 !important; color: #ffffff;">' +
+    '<div style="font-size: 10px; color: #ffffff;">Thank you for choosing ' + CONFIG.BUSINESS_NAME + '!</div>' +
+    '<div style="font-size: 9px; color: #cccccc; margin-top: 2px;">📧 ' + CONFIG.YOUR_EMAIL + ' &nbsp;|&nbsp; 📞 ' + CONFIG.YOUR_PHONE + '</div>' +
+    '</td></tr></table>' +
+    
+    '</div></body></html>';
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                    PARSE EMAIL ADDRESSES                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function parseEmailAddresses(emailString) {
+  if (!emailString) {
+    return { to: '', cc: '' };
+  }
+  
+  var emails = emailString.toString()
+    .split(/[,;\s]+/)
+    .map(function(email) {
+      return email.trim().toLowerCase();
+    })
+    .filter(function(email) {
+      return email && email.indexOf('@') > -1 && email.indexOf('.') > -1;
+    });
+  
+  if (emails.length === 0) {
+    return { to: '', cc: '' };
+  }
+  
+  if (emails.length === 1) {
+    return { to: emails[0], cc: '' };
+  }
+  
+  return {
+    to: emails[0],
+    cc: emails.slice(1).join(',')
+  };
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                       HELPER FUNCTIONS                                     ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function getLogoHtml() {
+  if (CONFIG.LOGO_FILE_ID && CONFIG.LOGO_FILE_ID !== "YOUR_LOGO_FILE_ID_HERE") {
+    return '<div style="text-align: center; margin-bottom: 20px;">' +
+      '<img src="https://drive.google.com/uc?export=view&id=' + CONFIG.LOGO_FILE_ID + '" ' +
+      'alt="' + CONFIG.BUSINESS_NAME + '" style="max-width: 200px; max-height: 80px;" ' +
+      'onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'block\';">' +
+      '<h1 style="display: none; color: #3498db; margin: 0; font-size: 28px;">✒️ ' + CONFIG.BUSINESS_NAME + '</h1></div>';
+  }
+  return '<div style="text-align: center; margin-bottom: 20px;">' +
+    '<h1 style="color: #3498db; margin: 0; font-size: 28px;">✒️ ' + CONFIG.BUSINESS_NAME + '</h1></div>';
+}
+
+function getEmailFooter() {
+  return '<div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 12px;">' +
+    '<p><strong>' + CONFIG.BUSINESS_NAME + '</strong><br>' + CONFIG.YOUR_EMAIL + '</p></div>';
+}
+
+function getInvoiceFolder() {
+  var parentFolder = null;
+  var parentFolders = DriveApp.getFoldersByName(CONFIG.PARENT_FOLDER_NAME);
+  
+  if (parentFolders.hasNext()) {
+    parentFolder = parentFolders.next();
+  } else {
+    parentFolder = DriveApp.createFolder(CONFIG.PARENT_FOLDER_NAME);
+    console.log('Created parent folder: ' + CONFIG.PARENT_FOLDER_NAME);
+  }
+  
+  var invoiceFolders = parentFolder.getFoldersByName(CONFIG.INVOICE_FOLDER_NAME);
+  
+  if (invoiceFolders.hasNext()) {
+    return invoiceFolders.next();
+  }
+  
+  var newFolder = parentFolder.createFolder(CONFIG.INVOICE_FOLDER_NAME);
+  console.log('Created invoice folder: ' + CONFIG.INVOICE_FOLDER_NAME + ' inside ' + CONFIG.PARENT_FOLDER_NAME);
+  
+  return newFolder;
+}
+
+function getRowData(row) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+  var data = sheet.getRange(row, 1, 1, 17).getValues()[0];
+  
+  return {
+    rowIndex: row,
+    submittedDate: data[COL.SUBMITTED_DATE],
+    client: data[COL.CLIENT],
+    clientEmail: data[COL.CLIENT_EMAIL],
+    publication: data[COL.PUBLICATION],
+    businessType: data[COL.BUSINESS_TYPE],
+    rateType: data[COL.RATE_TYPE],
+    title: data[COL.TITLE],
+    doclink: data[COL.DOCLINK],
+    wordCount: data[COL.WORD_COUNT],
+    rate: data[COL.RATE],
+    amount: data[COL.AMOUNT],
+    status: data[COL.STATUS],
+    dateOfPayment: data[COL.DATE_OF_PAYMENT],
+    paymentType: data[COL.PAYMENT_TYPE],
+    invoiceNum: data[COL.INVOICE_NUM],
+    emailSent: data[COL.EMAIL_SENT],
+    invoiceLink: data[COL.INVOICE_LINK]
+  };
+}
+
+function autoCalculateAmount(sheet, row) {
+  var rateType = sheet.getRange(row, COL.RATE_TYPE + 1).getValue();
+  var wordCount = sheet.getRange(row, COL.WORD_COUNT + 1).getValue();
+  var rate = sheet.getRange(row, COL.RATE + 1).getValue();
+  
+  if (rateType === 'Per word' && wordCount && rate) {
+    var amount = wordCount * rate;
+    sheet.getRange(row, COL.AMOUNT + 1).setValue(amount);
+  }
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     MANUAL MENU FUNCTIONS                                  ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function generateInvoiceForSelectedRow() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert('Please select a data row, not the header.');
+    return;
+  }
+  
+  var data = getRowData(row);
+  
+  if (!data.amount) {
+    SpreadsheetApp.getUi().alert('No amount found. Please enter an amount first.');
+    return;
+  }
+  
+  if (!data.invoiceNum) {
+    data.invoiceNum = generateInvoiceNumber(data.publication);
+    sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(data.invoiceNum);
+  }
+  
+  var result = createConsolidatedInvoicePDF([data], data.invoiceNum);
+  
+  sheet.getRange(row, COL.INVOICE_LINK + 1).setValue(result.pdfUrl);
+  
+  var folder = getInvoiceFolder();
+  
+  SpreadsheetApp.getUi().alert(
+    '✅ Invoice Generated!',
+    'Invoice ' + data.invoiceNum + ' created for ' + data.client + '\n\n' +
+    '📎 Invoice link added to the sheet!\n\n' +
+    'View invoices folder: ' + folder.getUrl()
+  );
+}
+
+function generateDueInvoiceForSelectedRow() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert('Please select a data row, not the header.');
+    return;
+  }
+  
+  var data = getRowData(row);
+  
+  if (!data.amount) {
+    SpreadsheetApp.getUi().alert('No amount found. Please enter an amount first.');
+    return;
+  }
+  
+  if (!data.invoiceNum) {
+    data.invoiceNum = generateInvoiceNumber(data.publication);
+    sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(data.invoiceNum);
+  }
+  
+  var result = createDueInvoicePDF([data], data.invoiceNum);
+  
+  sheet.getRange(row, COL.INVOICE_LINK + 1).setValue(result.pdfUrl);
+  
+  var folder = getInvoiceFolder();
+  
+  SpreadsheetApp.getUi().alert(
+    '✅ Payment Due Invoice Generated!',
+    'Invoice ' + data.invoiceNum + ' (Payment Due) created for ' + data.client + '\n\n' +
+    '📎 Invoice link added to the sheet!\n\n' +
+    'View invoices folder: ' + folder.getUrl()
+  );
+}
+
+function sendReminderForSelectedRow() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert('Please select a data row, not the header.');
+    return;
+  }
+  
+  var data = getRowData(row);
+  
+  if (!data.clientEmail) {
+    SpreadsheetApp.getUi().alert('❌ No client email found.');
+    return;
+  }
+  
+  var result = sendConsolidatedReminder([data]);
+  
+  if (result.success) {
+    sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('✅ Reminder Sent');
+    
+    if (result.invoiceUrl) {
+      sheet.getRange(row, COL.INVOICE_LINK + 1).setValue(result.invoiceUrl);
+    }
+    
+    SpreadsheetApp.getUi().alert('✅ Reminder email with invoice sent!\n\n📎 Invoice link added to the sheet!');
+  } else {
+    SpreadsheetApp.getUi().alert('❌ Failed to send email: ' + result.error);
+  }
+}
+
+function sendConfirmationForSelectedRow() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert('Please select a data row, not the header.');
+    return;
+  }
+  
+  var data = getRowData(row);
+  
+  if (!data.clientEmail) {
+    SpreadsheetApp.getUi().alert('❌ No client email found.');
+    return;
+  }
+  
+  if (!data.dateOfPayment) {
+    SpreadsheetApp.getUi().alert('❌ Missing Payment Details\n\nPlease fill "Date of Payment" before sending confirmation.');
+    return;
+  }
+  
+  if (!data.paymentType) {
+    SpreadsheetApp.getUi().alert('❌ Missing Payment Details\n\nPlease fill "Payment Type" before sending confirmation.');
+    return;
+  }
+  
+  if (!data.invoiceNum) {
+    data.invoiceNum = generateInvoiceNumber(data.publication);
+    sheet.getRange(row, COL.INVOICE_NUM + 1).setValue(data.invoiceNum);
+  }
+  
+  var result = sendConsolidatedConfirmation([data]);
+  
+  if (result.success) {
+    sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('✅ Confirmation Sent');
+    
+    if (result.invoiceUrl) {
+      sheet.getRange(row, COL.INVOICE_LINK + 1).setValue(result.invoiceUrl);
+    }
+    
+    SpreadsheetApp.getUi().alert('✅ Confirmation email with invoice sent!\n\n📎 Invoice link added to the sheet!');
+  } else {
+    SpreadsheetApp.getUi().alert('❌ Failed to send email: ' + result.error);
+  }
+}
+
+function resetEmailStatus() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert('Please select a data row.');
+    return;
+  }
+  
+  sheet.getRange(row, COL.EMAIL_SENT + 1).setValue('');
+  SpreadsheetApp.getUi().alert('✅ Email status reset.\n\nYou can now change the status to trigger a new email.');
+}
+
+function previewInvoice() {
+  var sheet = SpreadsheetApp.getActiveSheet();
+  var row = sheet.getActiveRange().getRow();
+  
+  if (row === 1) {
+    SpreadsheetApp.getUi().alert('Please select a data row.');
+    return;
+  }
+  
+  var data = getRowData(row);
+  
+  if (!data.amount) {
+    SpreadsheetApp.getUi().alert('No amount found. Please enter an amount first.');
+    return;
+  }
+  
+  var invoiceNum = data.invoiceNum || generateInvoiceNumber(data.publication);
+  var clientInfo = parseClientName(data.client);
+  var clientFormalName = clientInfo.formalName || data.client;
+  var cleanedPublication = cleanPublicationName(data.publication);
+  
+  var html = HtmlService.createHtmlOutput(
+    '<style>' +
+    'body { font-family: "Segoe UI", Arial, sans-serif; padding: 20px; background: #f5f6fa; }' +
+    '.invoice-box { border: 1px solid #ddd; padding: 25px; max-width: 550px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }' +
+    '.header { text-align: center; border-bottom: 2px solid #3498db; padding-bottom: 15px; margin-bottom: 20px; }' +
+    '.header h2 { color: #3498db; margin: 0; }' +
+    '.header h3 { margin: 10px 0 0 0; color: #2c3e50; }' +
+    '.details { margin-bottom: 20px; }' +
+    '.details p { margin: 8px 0; font-size: 14px; }' +
+    '.details strong { color: #555; }' +
+    '.amount { font-size: 24px; color: #27ae60; text-align: center; margin: 20px 0; padding: 15px; background: #e8f5e9; border-radius: 8px; }' +
+    '.link { word-break: break-all; font-size: 12px; color: #3498db; }' +
+    '.footer { text-align: center; color: #888; font-size: 11px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee; }' +
+    '</style>' +
+    '<div class="invoice-box">' +
+    '<div class="header"><h2>' + CONFIG.BUSINESS_NAME + '</h2><h3>INVOICE PREVIEW</h3></div>' +
+    '<div class="details">' +
+    '<p><strong>Invoice #:</strong> ' + invoiceNum + '</p>' +
+    '<p><strong>Client:</strong> ' + clientFormalName + '</p>' +
+    '<p><strong>Publication:</strong> ' + (cleanedPublication || 'N/A') + '</p>' +
+    '<p><strong>Title:</strong> ' + data.title + '</p>' +
+    '<p><strong>Submitted:</strong> ' + formatDisplayDate(data.submittedDate) + '</p>' +
+    '<p><strong>Document:</strong> <a href="' + data.doclink + '" target="_blank" class="link">' + (data.doclink || 'Not provided') + '</a></p>' +
+    '<p><strong>Rate Type:</strong> ' + (data.rateType || 'N/A') + '</p>' +
+    '<p><strong>Word Count:</strong> ' + (data.wordCount || 'N/A') + '</p>' +
+    '</div>' +
+    '<div class="amount"><strong>Amount: ₹' + parseFloat(data.amount).toLocaleString('en-IN') + '</strong></div>' +
+    '<div class="footer">This is a preview. Use "Generate Invoice" to create the PDF.</div>' +
+    '</div>'
+  )
+  .setWidth(620)
+  .setHeight(550);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, '📄 Invoice Preview');
+}
+
+function openInvoiceFolder() {
+  var folder = getInvoiceFolder();
+  var html = HtmlService.createHtmlOutput(
+    '<script>window.open("' + folder.getUrl() + '", "_blank"); google.script.host.close();</script>' +
+    '<p style="font-family: Arial; padding: 20px;">Opening folder... If it doesn\'t open automatically, ' +
+    '<a href="' + folder.getUrl() + '" target="_blank">click here</a>.</p>'
+  )
+  .setWidth(350)
+  .setHeight(100);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, '📁 Invoice Folder');
+}
+
+function processAllPendingEmails() {
+  SpreadsheetApp.getUi().alert(
+    '⚠️ Notice',
+    'With the new queueing system, emails are automatically sent 2 minutes after status change.\n\n' +
+    'This function is no longer needed, but you can still use manual send options for individual rows.'
+  );
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         UI HELPER FUNCTIONS                                ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function viewEmailQueue() {
+  var queue = getEmailQueue();
+  var entries = Object.entries(queue);
+  
+  if (entries.length === 0) {
+    SpreadsheetApp.getUi().alert('📭 Queue is empty');
+    return;
+  }
+  
+  var html = '<style>' +
+    'body { font-family: Arial; padding: 15px; font-size: 12px; }' +
+    '.entry { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 5px; }' +
+    '.pending { background: #fff3cd; }' +
+    '.sent { background: #d4edda; }' +
+    '.failed { background: #f8d7da; }' +
+    '.label { font-weight: bold; color: #555; }' +
+    '</style>';
+  
+  entries.forEach(function(item) {
+    var key = item[0];
+    var entry = item[1];
+    var status = entry.sent ? 'sent' : (entry.retryCount > 0 ? 'failed' : 'pending');
+    var timeLeft = Math.max(0, Math.round((entry.scheduledTime - new Date().getTime()) / 60000));
+    
+    html += '<div class="entry ' + status + '">' +
+      '<div><span class="label">Client:</span> ' + entry.clientEmail + '</div>' +
+      '<div><span class="label">Status:</span> ' + entry.status + '</div>' +
+      '<div><span class="label">Rows:</span> ' + entry.rows.join(', ') + '</div>' +
+      '<div><span class="label">Time left:</span> ' + timeLeft + ' minutes</div>' +
+      '<div><span class="label">Retry count:</span> ' + entry.retryCount + '</div>' +
+      (entry.lastError ? '<div style="color: red;">Error: ' + entry.lastError + '</div>' : '') +
+      '</div>';
+  });
+  
+  var output = HtmlService.createHtmlOutput(html)
+    .setWidth(500)
+    .setHeight(400);
+  
+  SpreadsheetApp.getUi().showModalDialog(output, '📬 Email Queue Status');
+}
+
+function viewRecurringStatus() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(RECURRING_CONFIG.SHEET_NAME);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Run "Setup Recurring Invoices" first');
+    return;
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  
+  var html = '<style>' +
+    'body { font-family: Arial; padding: 15px; font-size: 12px; }' +
+    'table { width: 100%; border-collapse: collapse; }' +
+    'th { background: #9b59b6; color: white; padding: 8px; text-align: left; }' +
+    'td { padding: 8px; border-bottom: 1px solid #ddd; }' +
+    '.active { color: green; font-weight: bold; }' +
+    '.paused { color: orange; }' +
+    '</style><table><thead><tr>' +
+    '<th>Client</th><th>Frequency</th><th>Next Due</th><th>Status</th>' +
+    '</tr></thead><tbody>';
+  
+  for (var i = 1; i < data.length; i++) {
+    var statusClass = data[i][12] === 'Active' ? 'active' : 'paused';
+    html += '<tr>' +
+      '<td>' + data[i][0] + '</td>' +
+      '<td>' + data[i][7] + '</td>' +
+      '<td>' + (data[i][11] ? formatShortDate(data[i][11]) : 'Not set') + '</td>' +
+      '<td class="' + statusClass + '">' + data[i][12] + '</td>' +
+      '</tr>';
+  }
+  
+  html += '</tbody></table>';
+  
+  var output = HtmlService.createHtmlOutput(html)
+    .setWidth(600)
+    .setHeight(400);
+  
+  SpreadsheetApp.getUi().showModalDialog(output, '🔁 Recurring Invoices Status');
+}
+
+function showAuditLog() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var auditSheet = ss.getSheetByName('Audit Log');
+  
+  if (!auditSheet) {
+    SpreadsheetApp.getUi().alert('📝 No audit log yet. Logs will appear after events occur.');
+    return;
+  }
+  
+  var url = ss.getUrl() + '#gid=' + auditSheet.getSheetId();
+  
+  var html = HtmlService.createHtmlOutput(
+    '<script>window.open("' + url + '", "_blank"); google.script.host.close();</script>' +
+    '<p style="font-family: Arial; padding: 20px;">Opening Audit Log... <a href="' + url + '" target="_blank">Click here if it doesn\'t open</a></p>'
+  ).setWidth(350).setHeight(100);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, '📝 Audit Log');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                           DASHBOARD                                        ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function showDashboard() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Work Log sheet not found. Run Initial Setup first.');
+    return;
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  
+  var totalEarned = 0;
+  var pendingAmount = 0;
+  var articleCount = 0;
+  var paidCount = 0;
+  var pendingCount = 0;
+  var reminderCount = 0;
+  var queuedCount = 0;
+  
+  var clientTotals = {};
+  var monthlyEarnings = {};
+  
+  for (var i = 1; i < data.length; i++) {
+    var amount = parseFloat(data[i][COL.AMOUNT]) || 0;
+    var status = data[i][COL.STATUS];
+    var emailStatus = data[i][COL.EMAIL_SENT];
+    var client = data[i][COL.CLIENT];
+    var paymentDate = data[i][COL.DATE_OF_PAYMENT];
+    
+    if (!client) continue;
+    
+    articleCount++;
+    
+    // Count queued emails
+    if (emailStatus && emailStatus.toString().includes('Queued')) {
+      queuedCount++;
+    }
+    
+    if (status === 'Paid') {
+      totalEarned += amount;
+      paidCount++;
+      
+      if (paymentDate) {
+        var monthKey = Utilities.formatDate(new Date(paymentDate), Session.getScriptTimeZone(), 'yyyy-MM');
+        monthlyEarnings[monthKey] = (monthlyEarnings[monthKey] || 0) + amount;
+      }
+    } else if (status === 'Not paid' || status === 'Reminder' || status === 'On hold') {
+      pendingAmount += amount;
+      pendingCount++;
+      if (status === 'Reminder') reminderCount++;
+    }
+    
+    if (!clientTotals[client]) {
+      clientTotals[client] = { total: 0, paid: 0, pending: 0 };
+    }
+    clientTotals[client].total += amount;
+    if (status === 'Paid') {
+      clientTotals[client].paid += amount;
+    } else {
+      clientTotals[client].pending += amount;
+    }
+  }
+  
+  var sortedClients = Object.entries(clientTotals)
+    .sort(function(a, b) { return b[1].total - a[1].total; })
+    .slice(0, 5);
+  
+  var clientList = '';
+  sortedClients.forEach(function(item) {
+    var name = item[0];
+    var clientData = item[1];
+    var statusColor = clientData.pending > 0 ? '#e74c3c' : '#27ae60';
+    var statusText = clientData.pending > 0 ? '₹' + clientData.pending.toLocaleString('en-IN') + ' pending' : '✓ Clear';
+    
+    clientList += '<tr>' +
+      '<td style="padding: 10px; border-bottom: 1px solid #eee;">' + name + '</td>' +
+      '<td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">₹' + clientData.total.toLocaleString('en-IN') + '</td>' +
+      '<td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; color: ' + statusColor + ';">' + statusText + '</td></tr>';
+  });
+  
+  var currentMonth = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM');
+  var thisMonthEarnings = monthlyEarnings[currentMonth] || 0;
+  
+  // Check email queue status
+  var queue = getEmailQueue();
+  var queueSize = Object.keys(queue).filter(function(key) { return !queue[key].sent; }).length;
+  
+  var queueBadge = queueSize > 0 
+    ? '<div style="background: #fff3cd; padding: 8px; border-radius: 4px; margin-top: 10px; font-size: 11px; color: #856404;">' +
+      '⏱️ ' + queueSize + ' email' + (queueSize > 1 ? 's' : '') + ' in queue (' + queuedCount + ' rows)</div>'
+    : '';
+  
+  var html = HtmlService.createHtmlOutput(
+    '<style>' +
+    'body { font-family: "Segoe UI", Arial, sans-serif; padding: 20px; background: #f5f6fa; margin: 0; }' +
+    '.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }' +
+    '.stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }' +
+    '.stat-card.full { grid-column: 1 / -1; }' +
+    '.stat-card.green { border-left: 4px solid #27ae60; }' +
+    '.stat-card.orange { border-left: 4px solid #e74c3c; }' +
+    '.stat-card.blue { border-left: 4px solid #3498db; }' +
+    '.stat-card.purple { border-left: 4px solid #9b59b6; }' +
+    '.stat-value { font-size: 26px; font-weight: bold; color: #2c3e50; }' +
+    '.stat-label { font-size: 11px; color: #7f8c8d; text-transform: uppercase; margin-top: 5px; letter-spacing: 0.5px; }' +
+    'h3 { color: #2c3e50; margin: 15px 0 10px 0; font-size: 14px; }' +
+    'table { width: 100%; border-collapse: collapse; }' +
+    'th { text-align: left; padding: 10px; background: #f8f9fa; font-size: 12px; color: #7f8c8d; }' +
+    '.summary { display: flex; gap: 20px; margin-top: 12px; }' +
+    '.summary-item { text-align: center; }' +
+    '.summary-value { font-size: 18px; font-weight: bold; color: #2c3e50; }' +
+    '.summary-label { font-size: 10px; color: #7f8c8d; }' +
+    '.version { text-align: center; margin-top: 20px; font-size: 10px; color: #95a5a6; }' +
+    '</style>' +
+    '<div class="stat-grid">' +
+    '<div class="stat-card green">' +
+    '<div class="stat-value">₹' + totalEarned.toLocaleString('en-IN') + '</div>' +
+    '<div class="stat-label">Total Earned</div>' +
+    '<div class="summary"><div class="summary-item"><div class="summary-value">' + paidCount + '</div>' +
+    '<div class="summary-label">Articles Paid</div></div></div>' + queueBadge + '</div>' +
+    '<div class="stat-card orange">' +
+    '<div class="stat-value">₹' + pendingAmount.toLocaleString('en-IN') + '</div>' +
+    '<div class="stat-label">Pending Payments</div>' +
+    '<div class="summary"><div class="summary-item"><div class="summary-value">' + pendingCount + '</div>' +
+    '<div class="summary-label">Pending</div></div>' +
+    '<div class="summary-item"><div class="summary-value">' + reminderCount + '</div>' +
+    '<div class="summary-label">Reminders</div></div></div></div>' +
+    '<div class="stat-card blue">' +
+    '<div class="stat-value">' + articleCount + '</div>' +
+    '<div class="stat-label">Total Articles</div></div>' +
+    '<div class="stat-card purple">' +
+    '<div class="stat-value">₹' + thisMonthEarnings.toLocaleString('en-IN') + '</div>' +
+    '<div class="stat-label">This Month</div></div></div>' +
+    '<div class="stat-card full">' +
+    '<h3 style="margin-top: 0;">👥 Top Clients</h3>' +
+    '<table><thead><tr><th>Client</th><th style="text-align: right;">Total</th>' +
+    '<th style="text-align: right;">Status</th></tr></thead><tbody>' +
+    (clientList || '<tr><td colspan="3" style="padding: 15px; color: #999;">No data yet</td></tr>') +
+    '</tbody></table></div>' +
+    '<div class="version">Quill & Query Invoice System v2.0 • Queueing Enabled</div>'
+  )
+  .setWidth(480)
+  .setHeight(620);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, '📊 Quill & Query Dashboard');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                         INITIAL SETUP                                      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+function initialSetup() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.SHEET_NAME);
+  } else {
+    var ui = SpreadsheetApp.getUi();
+    var response = ui.alert(
+      '⚠️ Sheet Exists',
+      'The Work Log sheet already exists. Do you want to reset it?\n\n⚠️ This will CLEAR ALL DATA!',
+      ui.ButtonSet.YES_NO
+    );
+    if (response !== ui.Button.YES) {
+      ui.alert('Setup cancelled. Your existing data is preserved.\n\nTrigger has been updated.');
+      setupEditTrigger();
+      return;
+    }
+    sheet.clear();
+  }
+  
+  // ═══ HEADERS ═══
+  var headers = [
+    'Submitted Date', 'Client', 'Client Email', 'Publication',
+    'BusinessType (GTM)', 'Rate Type', 'Title', 'Doclink',
+    'Word Count', 'Rate', 'Amount', 'Status',
+    'Date of Payment', 'Payment Type', 'Invoice #', 'Email Sent', 'Invoice Link'
+  ];
+  
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  
+  // ═══ HEADER FORMATTING ═══
+  var headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setFontWeight('bold');
+  headerRange.setBackground('#3498db');
+  headerRange.setFontColor('white');
+  headerRange.setHorizontalAlignment('center');
+  headerRange.setVerticalAlignment('middle');
+  sheet.setRowHeight(1, 35);
+  
+  sheet.setFrozenRows(1);
+  
+  // ═══ COLUMN WIDTHS ═══
+  var widths = [120, 150, 200, 150, 130, 100, 250, 200, 100, 80, 100, 100, 130, 120, 220, 150, 280];
+  widths.forEach(function(w, i) { sheet.setColumnWidth(i + 1, w); });
+  
+  var numRows = 200;
+  
+  // ═══ DATA VALIDATION ═══
+  sheet.getRange(2, COL.RATE_TYPE + 1, numRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Per word', 'Per article', 'Hourly', 'Retainer'], true)
+      .build()
+  );
+  
+  sheet.getRange(2, COL.STATUS + 1, numRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['On hold', 'Paid', 'Not paid', 'Reminder'], true)
+      .build()
+  );
+  
+  sheet.getRange(2, COL.PAYMENT_TYPE + 1, numRows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Bank transfer', 'UPI', 'PayPal', 'Cheque', 'Cash'], true)
+      .build()
+  );
+  
+  // ═══ NUMBER FORMATS ═══
+  sheet.getRange(2, COL.SUBMITTED_DATE + 1, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(2, COL.DATE_OF_PAYMENT + 1, numRows, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(2, COL.RATE + 1, numRows, 1).setNumberFormat('₹#,##0.00');
+  sheet.getRange(2, COL.AMOUNT + 1, numRows, 1).setNumberFormat('₹#,##0.00');
+  
+  // ═══ CONDITIONAL FORMATTING FOR EMAIL STATUS ═══
+  var emailStatusRange = sheet.getRange(2, COL.EMAIL_SENT + 1, numRows, 1);
+  
+  // Green for sent
+  var ruleSent = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('✅')
+    .setBackground('#d4edda')
+    .setFontColor('#155724')
+    .setRanges([emailStatusRange])
+    .build();
+  
+  // Yellow for queued
+  var ruleQueued = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('📬')
+    .setBackground('#fff3cd')
+    .setFontColor('#856404')
+    .setRanges([emailStatusRange])
+    .build();
+  
+  // Red for failed
+  var ruleFailed = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('❌')
+    .setBackground('#f8d7da')
+    .setFontColor('#721c24')
+    .setRanges([emailStatusRange])
+    .build();
+  
+  // Blue for retry
+  var ruleRetry = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('🔄')
+    .setBackground('#cce5ff')
+    .setFontColor('#004085')
+    .setRanges([emailStatusRange])
+    .build();
+  
+  var rules = sheet.getConditionalFormatRules();
+  rules.push(ruleSent, ruleQueued, ruleFailed, ruleRetry);
+  sheet.setConditionalFormatRules(rules);
+  
+  // ═══ CREATE INVOICE FOLDER ═══
+  var folder = getInvoiceFolder();
+  
+  // ═══ SETUP TRIGGERS ═══
+  setupEditTrigger();
+  
+  // ═══ INITIALIZE PROPERTIES ═══
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('SYSTEM_VERSION', '2.0');
+  props.setProperty('SETUP_DATE', new Date().toISOString());
+  
+  // ═══ SUCCESS MESSAGE ═══
+  SpreadsheetApp.getUi().alert(
+    '✅ Setup Complete!',
+    'Your Quill & Query invoicing system v2.0 is ready!\n\n' +
+    '📁 Invoice folder: "' + CONFIG.INVOICE_FOLDER_NAME + '"\n\n' +
+    '═══════════════════════════════════════\n' +
+    '🆕 NEW FEATURES:\n' +
+    '═══════════════════════════════════════\n' +
+    '✓ Email queueing with 2-minute delay\n' +
+    '✓ Automatic debouncing (no duplicates)\n' +
+    '✓ Auto-retry on failure (3 attempts)\n' +
+    '✓ Audit logging for all operations\n' +
+    '✓ Recurring invoices support\n' +
+    '✓ Enhanced dashboard\n\n' +
+    '═══════════════════════════════════════\n' +
+    'EXISTING FEATURES:\n' +
+    '═══════════════════════════════════════\n' +
+    '✓ Invoice # auto-generated\n' +
+    '✓ Amount auto-calculates\n' +
+    '✓ Payment validation\n' +
+    '✓ Consolidated invoices\n' +
+    '✓ Invoice Link column\n' +
+    '✓ Salutation support\n' +
+    '✓ Publication name cleaning\n\n' +
+    '═══════════════════════════════════════\n' +
+    'NEXT STEPS:\n' +
+    '═══════════════════════════════════════\n' +
+    '1. Update CONFIG with your details\n' +
+    '2. Add your logo file ID\n' +
+    '3. Set up recurring invoices (optional)\n' +
+    '4. Start adding entries!\n\n' +
+    'When you change Status to "Paid" or "Reminder":\n' +
+    '→ Email queued (2-min delay)\n' +
+    '→ Toast notification shown\n' +
+    '→ Auto-consolidation for same client+date\n' +
+    '→ Auto-retry if failed\n\n' +
+    'View the queue anytime: Email Actions → View Email Queue'
+  );
+}
+
+function addInvoiceLinkColumn() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Work Log sheet not found. Please run Initial Setup first.');
+    return;
+  }
+  
+  var headers = sheet.getRange(1, 1, 1, 20).getValues()[0];
+  
+  if (headers.indexOf('Invoice Link') > -1) {
+    SpreadsheetApp.getUi().alert('✓ Invoice Link column already exists!');
+    return;
+  }
+  
+  var lastCol = headers.filter(function(h) { return h !== ''; }).length;
+  
+  sheet.getRange(1, lastCol + 1).setValue('Invoice Link');
+  sheet.getRange(1, lastCol + 1)
+    .setFontWeight('bold')
+    .setBackground('#3498db')
+    .setFontColor('white')
+    .setHorizontalAlignment('center');
+  sheet.setColumnWidth(lastCol + 1, 280);
+  
+  SpreadsheetApp.getUi().alert('✅ Invoice Link column added!\n\nNew invoices will automatically have their links saved here.');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     TESTING & MAINTENANCE FUNCTIONS                        ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Test all system components (for debugging)
+ */
+function runSystemDiagnostics() {
+  var report = '═══════════════════════════════════════\n';
+  report += 'QUILL & QUERY SYSTEM DIAGNOSTICS\n';
+  report += '═══════════════════════════════════════\n\n';
+  
+  // Check configuration
+  report += '📋 CONFIGURATION:\n';
+  report += '  Business Name: ' + CONFIG.BUSINESS_NAME + '\n';
+  report += '  Your Name: ' + CONFIG.YOUR_NAME + '\n';
+  report += '  Email: ' + CONFIG.YOUR_EMAIL + '\n';
+  report += '  Invoice Prefix: ' + CONFIG.INVOICE_PREFIX + '\n\n';
+  
+  // Check sheets
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var workLog = ss.getSheetByName(CONFIG.SHEET_NAME);
+  var recurring = ss.getSheetByName(RECURRING_CONFIG.SHEET_NAME);
+  var audit = ss.getSheetByName('Audit Log');
+  
+  report += '📊 SHEETS:\n';
+  report += '  Work Log: ' + (workLog ? '✓ Found' : '✗ Missing') + '\n';
+  report += '  Recurring Invoices: ' + (recurring ? '✓ Found' : '✗ Missing') + '\n';
+  report += '  Audit Log: ' + (audit ? '✓ Found' : '✗ Missing') + '\n\n';
+  
+  // Check triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  var editTrigger = triggers.filter(function(t) { return t.getHandlerFunction() === 'onEditInstallable'; }).length;
+  var recurringTrigger = triggers.filter(function(t) { return t.getHandlerFunction() === 'processRecurringInvoices'; }).length;
+  var queueTriggers = triggers.filter(function(t) { return t.getHandlerFunction() === 'processEmailQueueWrapper'; }).length;
+  
+  report += '⚡ TRIGGERS:\n';
+  report += '  Edit Trigger: ' + (editTrigger > 0 ? '✓ Active' : '✗ Missing') + '\n';
+  report += '  Recurring Invoice: ' + (recurringTrigger > 0 ? '✓ Active' : '✗ Missing') + '\n';
+  report += '  Queue Processors: ' + queueTriggers + ' active\n\n';
+  
+  // Check email queue
+  var queue = getEmailQueue();
+  var queueEntries = Object.keys(queue);
+  var pendingEmails = queueEntries.filter(function(k) { return !queue[k].sent; }).length;
+  var sentEmails = queueEntries.filter(function(k) { return queue[k].sent; }).length;
+  
+  report += '📧 EMAIL QUEUE:\n';
+  report += '  Pending: ' + pendingEmails + '\n';
+  report += '  Sent (last 24h): ' + sentEmails + '\n';
+  report += '  Total entries: ' + queueEntries.length + '\n\n';
+  
+  // Check folder
+  try {
+    var folder = getInvoiceFolder();
+    var fileCount = 0;
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      files.next();
+      fileCount++;
+    }
+    report += '📁 INVOICE FOLDER:\n';
+    report += '  Location: ' + folder.getName() + '\n';
+    report += '  Invoices: ' + fileCount + ' files\n\n';
+  } catch (e) {
+    report += '📁 INVOICE FOLDER:\n';
+    report += '  ✗ Error: ' + e.message + '\n\n';
+  }
+  
+  // Check email quota
+  var remaining = MailApp.getRemainingDailyQuota();
+  report += '📮 EMAIL QUOTA:\n';
+  report += '  Remaining today: ' + remaining + '\n';
+  report += '  Status: ' + (remaining > 50 ? '✓ Good' : (remaining > 10 ? '⚠ Low' : '✗ Critical')) + '\n\n';
+  
+  // Data statistics
+  if (workLog) {
+    var data = workLog.getDataRange().getValues();
+    var totalRows = data.length - 1;
+    var paidCount = 0;
+    var pendingCount = 0;
+    
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][COL.STATUS] === 'Paid') paidCount++;
+      if (data[i][COL.STATUS] === 'Not paid' || data[i][COL.STATUS] === 'Reminder') pendingCount++;
+    }
+    
+    report += '📈 DATA STATISTICS:\n';
+    report += '  Total Articles: ' + totalRows + '\n';
+    report += '  Paid: ' + paidCount + '\n';
+    report += '  Pending: ' + pendingCount + '\n\n';
+  }
+  
+  report += '═══════════════════════════════════════\n';
+  report += 'Diagnostics completed at: ' + new Date().toLocaleString() + '\n';
+  report += '═══════════════════════════════════════\n';
+  
+  Logger.log(report);
+  
+  var html = HtmlService.createHtmlOutput(
+    '<pre style="font-family: monospace; font-size: 11px; padding: 20px; white-space: pre-wrap;">' + 
+    report + 
+    '</pre>'
+  )
+  .setWidth(600)
+  .setHeight(500);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, '🔍 System Diagnostics');
+}
+
+/**
+ * Clean up old queue entries and failed triggers
+ */
+function cleanupSystem() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert(
+    'System Cleanup',
+    'This will:\n' +
+    '• Remove old queue entries (>24h)\n' +
+    '• Delete orphaned triggers\n' +
+    '• Clean audit log (keep last 1000)\n\n' +
+    'Continue?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response !== ui.Button.YES) return;
+  
+  var cleaned = {
+    queueEntries: 0,
+    triggers: 0,
+    auditLogs: 0
+  };
+  
+  // Clean queue
+  var queue = getEmailQueue();
+  var oneDayAgo = new Date().getTime() - (24 * 60 * 60 * 1000);
+  var newQueue = {};
+  
+  Object.keys(queue).forEach(function(key) {
+    if (queue[key].sent && queue[key].sentAt && queue[key].sentAt < oneDayAgo) {
+      cleaned.queueEntries++;
+    } else {
+      newQueue[key] = queue[key];
+    }
+  });
+  
+  PropertiesService.getScriptProperties().setProperty('EMAIL_QUEUE', JSON.stringify(newQueue));
+  
+  // Clean orphaned triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  var props = PropertiesService.getScriptProperties();
+  var triggerMap = JSON.parse(props.getProperty('TRIGGER_MAP') || '{}');
+  
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'processEmailQueueWrapper') {
+      var triggerId = trigger.getUniqueId();
+      var queueId = triggerMap[triggerId];
+      
+      // If trigger not in map or queue entry doesn't exist, delete it
+      if (!queueId || !newQueue[queueId]) {
+        ScriptApp.deleteTrigger(trigger);
+        delete triggerMap[triggerId];
+        cleaned.triggers++;
+      }
+    }
+  });
+  
+  props.setProperty('TRIGGER_MAP', JSON.stringify(triggerMap));
+  
+  // Clean audit log (keep last 1000 entries)
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var auditSheet = ss.getSheetByName('Audit Log');
+  
+  if (auditSheet) {
+    var lastRow = auditSheet.getLastRow();
+    if (lastRow > 1001) {
+      var rowsToDelete = lastRow - 1001;
+      auditSheet.deleteRows(2, rowsToDelete);
+      cleaned.auditLogs = rowsToDelete;
+    }
+  }
+  
+  logAuditEvent('system_cleanup', cleaned);
+  
+  ui.alert(
+    '✅ Cleanup Complete',
+    'Cleaned:\n' +
+    '• Queue entries: ' + cleaned.queueEntries + '\n' +
+    '• Orphaned triggers: ' + cleaned.triggers + '\n' +
+    '• Audit log rows: ' + cleaned.auditLogs
+  );
+}
+
+/**
+ * Export data to CSV (backup)
+ */
+function exportToCSV() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Work Log sheet not found.');
+    return;
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  var csv = '';
+  
+  data.forEach(function(row) {
+    csv += row.map(function(cell) {
+      var value = cell.toString().replace(/"/g, '""');
+      return '"' + value + '"';
+    }).join(',') + '\n';
+  });
+  
+  var blob = Utilities.newBlob(csv, 'text/csv', 'QuillQuery_Export_' + 
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss') + '.csv');
+  
+  var folder = getInvoiceFolder();
+  var file = folder.createFile(blob);
+  
+  SpreadsheetApp.getUi().alert(
+    '✅ Export Complete',
+    'CSV file created in invoice folder:\n\n' +
+    file.getName() + '\n\n' +
+    'URL: ' + file.getUrl()
+  );
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                     ADDITIONAL MENU ITEMS (OPTIONAL)                       ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Add advanced menu (optional - uncomment in onOpen to use)
+ */
+function createAdvancedMenu() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('🔧 Advanced')
+    .addItem('🔍 Run Diagnostics', 'runSystemDiagnostics')
+    .addItem('🧹 Cleanup System', 'cleanupSystem')
+    .addItem('💾 Export to CSV', 'exportToCSV')
+    .addSeparator()
+    .addItem('📊 Queue Statistics', 'showQueueStatistics')
+    .addItem('🔄 Force Process Queue', 'forceProcessQueue')
+    .addToUi();
+}
+
+function showQueueStatistics() {
+  var queue = getEmailQueue();
+  var stats = {
+    total: 0,
+    pending: 0,
+    sent: 0,
+    failed: 0,
+    retrying: 0
+  };
+  
+  Object.keys(queue).forEach(function(key) {
+    stats.total++;
+    if (queue[key].sent) {
+      stats.sent++;
+    } else {
+      stats.pending++;
+      if (queue[key].retryCount > 0) {
+        stats.retrying++;
+      }
+    }
+    if (queue[key].retryCount >= QUEUE_CONFIG.MAX_RETRIES) {
+      stats.failed++;
+    }
+  });
+  
+  var html = '<style>' +
+    'body { font-family: Arial; padding: 20px; }' +
+    '.stat { margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; }' +
+    '.stat-value { font-size: 24px; font-weight: bold; color: #3498db; }' +
+    '.stat-label { font-size: 12px; color: #666; }' +
+    '</style>' +
+    '<div class="stat"><div class="stat-value">' + stats.total + '</div><div class="stat-label">Total Queue Entries</div></div>' +
+    '<div class="stat"><div class="stat-value">' + stats.pending + '</div><div class="stat-label">Pending</div></div>' +
+    '<div class="stat"><div class="stat-value">' + stats.sent + '</div><div class="stat-label">Sent (last 24h)</div></div>' +
+    '<div class="stat"><div class="stat-value">' + stats.retrying + '</div><div class="stat-label">Retrying</div></div>' +
+    '<div class="stat"><div class="stat-value">' + stats.failed + '</div><div class="stat-label">Failed</div></div>';
+  
+  var output = HtmlService.createHtmlOutput(html)
+    .setWidth(400)
+    .setHeight(400);
+  
+  SpreadsheetApp.getUi().showModalDialog(output, '📊 Queue Statistics');
+}
+
+function forceProcessQueue() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.alert(
+    'Force Process Queue',
+    'This will immediately process ALL pending queue entries (ignoring delays).\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response !== ui.Button.YES) return;
+  
+  var queue = getEmailQueue();
+  var processed = 0;
+  
+  Object.keys(queue).forEach(function(key) {
+    if (!queue[key].sent) {
+      processQueueEntry(key, queue[key], queue);
+      processed++;
+    }
+  });
+  
+  ui.alert('✅ Processed ' + processed + ' queue entries.');
+}
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║                            END OF SCRIPT                                   ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/**
+ * Script Information
+ * 
+ * Name: Quill & Query Invoice System
+ * Version: 2.0
+ * Author: Custom Development
+ * Last Updated: 2024
+ * 
+ * Features:
+ * - Email queueing with debouncing
+ * - Automatic retry on failure
+ * - Invoice consolidation
+ * - Recurring invoices
+ * - Audit logging
+ * - Payment validation
+ * - Professional PDF invoices
+ * - Dashboard analytics
+ * 
+ * Dependencies:
+ * - Google Sheets API
+ * - Gmail API
+ * - Google Drive API
+ * - Apps Script Services
+ * 
+ * Setup Instructions:
+ * 1. Run initialSetup()
+ * 2. Update CONFIG section
+ * 3. Add logo file ID
+ * 4. (Optional) Run setupRecurringInvoices()
+ * 
+ * Support:
+ * - Check diagnostics: runSystemDiagnostics()
+ * - View logs: Audit Log sheet
+ * - Clean up: cleanupSystem()
+ */
